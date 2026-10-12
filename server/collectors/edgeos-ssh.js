@@ -58,7 +58,17 @@ function parse(text) {
     if (cur && line.trim()) cur.push(line.trim());
   }
   const seen = new Map();
-  for (const l of sec.fdb || []) {
+  // MT7621 "switch dump": "08c:   ---1 ----    0  4094  148  b827ebccbe0c  -  -": one flag per chip port 0..6 (7 = none
+  // on this chip); chip port N is the jack ethN on an EdgeRouter X, port 6 the CPU (the router's own MACs)
+  for (const l of sec.switchdump || []) {
+    const m = l.match(/^[0-9a-f]+:\s+([-1]{4})\s+([-1]{3,4})\s+\d+\s+(\d+)\s+\d+\s+([0-9a-f]{12})\b/i);
+    if (!m) continue;
+    const ports = [...(m[1] + m[2])].flatMap((ch, i) => (ch === "1" ? [i] : []));
+    if (ports.length !== 1 || ports[0] > 5) continue; // multicast groups (several ports) and the CPU port
+    const mac = normMac(m[4].match(/../g).join(":"));
+    if (isMac(mac) && !(parseInt(mac.slice(0, 2), 16) & 1)) seen.set(mac, { iface: `eth${ports[0]}`, vlan: Number(m[3]) });
+  }
+  for (const l of seen.size ? [] : sec.fdb || []) {
     const m = l.match(/^([0-9a-f:]{17}) dev (\S+)(.*)$/i);
     if (!m || /\b(permanent|self|local)\b/.test(m[3]) || !/\bmaster switch0\b/.test(m[3])) continue;
     const mac = normMac(m[1]);
@@ -81,7 +91,7 @@ async function collect(col) {
   if (text.includes(MARKER)) throw new Error("NOT LOCKED: this key gets a full shell on the router, so netmap won't use it. Run step 3 of the setup commands (the sshd lock)");
   if (!/== fdb/.test(text)) throw new Error("the key works but the router didn't run netmap-read: check /config/scripts/netmap-read and the lock (step 3)");
   const seen = parse(text);
-  if (!seen.size) throw new Error("netmap-read ran but found no MACs on switch0");
+  if (!seen.size) throw new Error(/== switchdump/.test(text) ? "netmap-read ran but found no MACs on the switch" : "found no MACs on switch0: update /config/scripts/netmap-read (step 1 of the setup commands) for the switch-chip table");
   return { probes: { mactable: "ok" }, clients: [...seen].map(([mac, s]) => ({ mac, via: "fdb", iface: s.iface, detail: { vlan: s.vlan, source: "edgeos" } })) };
 }
 
