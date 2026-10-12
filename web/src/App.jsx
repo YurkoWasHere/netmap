@@ -52,6 +52,19 @@ const COLLECTORS = {
       poePorts: ["PoE per port (watts, volts, mA, class)", "the switch's web login"],
       poeTotal: ["PoE total and budget", "the switch's web login"]
     }
+  },
+  "edgeos-web": {
+    label: "EdgeOS web UI (DHCP names)",
+    hint: "Logs in to the EdgeRouter's web page for its DHCP leases, to name clients that SNMP's ARP table only shows by IP. A read-only (operator) login is enough: set system login user netmap level operator.",
+    defaults: { https: true, username: "netmap" },
+    probes: { leases: ["DHCP leases (client names)", "a web login on the router; read-only (operator level) is enough"] }
+  },
+  "edgeos-ssh": {
+    label: "EdgeOS MAC table (SSH key)",
+    hint: "Which device is on which jack. EdgeOS only shows its switch's MAC table to a shell, so netmap makes an SSH key that the router lets run one read-only script and nothing else. After adding, paste the commands it shows on the router.",
+    defaults: { username: "netmap-ssh", port: "22" },
+    noPassword: true, noHttps: true,
+    probes: { mactable: ["MAC table (what is on each port)", "the netmap-read script and netmap's SSH key on the router (Polling → setup commands)"] }
   }
 };
 
@@ -535,13 +548,16 @@ function Collectors({ node, device, onChanged }) {
   const [err, setErr] = useState("");
   const load = () => api.collectors(node.deviceId).then(setList).catch(() => setList([]));
   useEffect(() => { load(); setAdding(null); setErr(""); }, [node.deviceId]);
-  const start = (kind) => setAdding({ kind, host: "", username: COLLECTORS[kind].defaults.username || "", password: "", https: !!COLLECTORS[kind].defaults.https });
+  const [setup, setSetup] = useState(null); // { id, text } commands to run on the device
+  const showSetup = async (id) => { if (setup && setup.id === id) return setSetup(null); try { setSetup({ id, ...(await api.collectorSetup(id)) }); } catch (x) { setErr(x.message); } };
+  const start = (kind) => setAdding({ kind, host: "", port: COLLECTORS[kind].defaults.port || "", username: COLLECTORS[kind].defaults.username || "", password: "", https: !!COLLECTORS[kind].defaults.https });
   const save = async (e) => {
     e.preventDefault(); setBusy(true); setErr("");
     try {
-      const r = await api.addCollector(node.deviceId, adding);
+      const r = await api.addCollector(node.deviceId, { ...adding, port: adding.port ? Number(adding.port) : null });
       setAdding(null);
-      if (r.poll && !r.poll.ok) setErr(`Added, but the poll failed: ${r.poll.error}`);
+      if (COLLECTORS[adding.kind].noPassword) setSetup({ id: r.collector.id, ...(await api.collectorSetup(r.collector.id)) });
+      else if (r.poll && !r.poll.ok) setErr(`Added, but the poll failed: ${r.poll.error}`);
     } catch (x) { setErr(x.message); } finally { setBusy(false); load(); onChanged(); }
   };
   const act = async (fn) => { setBusy(true); try { await fn(); } catch (x) { setErr(x.message); } finally { setBusy(false); load(); onChanged(); } };
@@ -553,9 +569,10 @@ function Collectors({ node, device, onChanged }) {
         <div key={c.id} className="nm-collector">
           <div>
             <div>{(COLLECTORS[c.kind] || {}).label || c.kind}{!c.enabled && <span className="hint"> (off)</span>}</div>
-            <div className="hint mono">{c.username}@{c.host || (device && device.host) || node.host}{c.https ? " (https)" : ""}</div>
+            <div className="hint mono">{c.username}@{c.host || (device && device.host) || node.host}{COLLECTORS[c.kind] && COLLECTORS[c.kind].noHttps ? (c.port ? `:${c.port}` : "") : c.https ? " (https)" : ""}</div>
           </div>
           <div className="row">
+            {COLLECTORS[c.kind] && COLLECTORS[c.kind].noPassword && <button className="btn sm quiet" onClick={() => showSetup(c.id)}>{setup && setup.id === c.id ? "Hide setup" : "Setup commands"}</button>}
             <button className="btn sm quiet" disabled={busy} onClick={() => act(() => api.updateCollector(c.id, { enabled: !c.enabled }))}>{c.enabled ? "Turn off" : "Turn on"}</button>
             <button className="btn sm quiet" disabled={busy} onClick={() => act(() => api.deleteCollector(c.id))}>Remove</button>
           </div>
@@ -566,10 +583,12 @@ function Collectors({ node, device, onChanged }) {
           <p className="hint" style={{ margin: 0 }}>{COLLECTORS[adding.kind].hint}</p>
           <label>Address<input value={adding.host} placeholder={(device && device.host) || node.host} onChange={(e) => setAdding({ ...adding, host: e.target.value })} /></label>
           <label>User<input value={adding.username} onChange={(e) => setAdding({ ...adding, username: e.target.value })} /></label>
-          <label>Password<input type="password" autoComplete="new-password" value={adding.password} onChange={(e) => setAdding({ ...adding, password: e.target.value })} /></label>
-          <label className="chk"><input type="checkbox" checked={adding.https} onChange={(e) => setAdding({ ...adding, https: e.target.checked })} /> HTTPS</label>
+          {COLLECTORS[adding.kind].noPassword
+            ? <label>SSH port<input value={adding.port} inputMode="numeric" onChange={(e) => setAdding({ ...adding, port: e.target.value })} /></label>
+            : <label>Password<input type="password" autoComplete="new-password" value={adding.password} onChange={(e) => setAdding({ ...adding, password: e.target.value })} /></label>}
+          {!COLLECTORS[adding.kind].noHttps && <label className="chk"><input type="checkbox" checked={adding.https} onChange={(e) => setAdding({ ...adding, https: e.target.checked })} /> HTTPS</label>}
           <div className="row">
-            <button className="btn" disabled={busy || !adding.password}>{busy ? "Testing…" : "Add and poll"}</button>
+            <button className="btn" disabled={busy || (!COLLECTORS[adding.kind].noPassword && !adding.password)}>{busy ? "Testing…" : COLLECTORS[adding.kind].noPassword ? "Add and make a key" : "Add and poll"}</button>
             <button type="button" className="btn quiet" onClick={() => setAdding(null)}>Cancel</button>
           </div>
         </form>
@@ -581,6 +600,12 @@ function Collectors({ node, device, onChanged }) {
           </select>
         </label>
       )}
+      {setup && <div className="nm-setup-cmds">
+        <p className="hint">Paste these on the router (SSH in as an admin such as <code>ubnt</code>), then press <b>Poll now</b>. The key can only run the read-only script; the private half stays in netmap.</p>
+        <pre className="nm-log">{setup.text}</pre>
+        <div className="row"><button className="btn sm" onClick={() => { try { navigator.clipboard.writeText(setup.text); } catch (e) {} }}>Copy</button>
+          <button className="btn sm quiet" onClick={() => setSetup(null)}>Done</button></div>
+      </div>}
       {err && <p className="nm-error">{err}</p>}
     </div>
   );

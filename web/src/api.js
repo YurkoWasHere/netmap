@@ -29,6 +29,7 @@ export function makeApi(base = "") {
     collectors: (id) => req("GET", `/api/devices/${id}/collectors`),
     addCollector: (id, c) => req("POST", `/api/devices/${id}/collectors`, c),
     updateCollector: (id, c) => req("PATCH", `/api/collectors/${id}`, c),
+    collectorSetup: (id) => req("GET", `/api/collectors/${id}/setup`),
     deleteCollector: (id) => req("DELETE", `/api/collectors/${id}`),
     addLink: (l) => req("POST", "/api/links", l),
     deleteLink: (id) => req("DELETE", `/api/links/${id}`)

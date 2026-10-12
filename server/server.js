@@ -18,6 +18,7 @@
 //   GET    /api/devices/:id/collectors   the device's extra data sources (no passwords)
 //   POST   /api/devices/:id/collectors   { kind, host?, port?, https?, verify_tls?, username, password } adds one
 //   PATCH  /api/collectors/:id           change any of those, or { enabled }; blank password keeps the current one
+//   GET    /api/collectors/:id/setup     { text }: commands to run on the device (kinds that make their own SSH key)
 //   DELETE /api/collectors/:id
 //   GET    /api/devices/:id/raw          latest normalised poll result (for debugging a device)
 //   POST   /api/oui/update               re-download the MAC manufacturer list now (it also refreshes monthly)
@@ -181,7 +182,7 @@ function cleanCollector(b, partial) {
   for (const k of ["host", "username", "password"]) if (b[k] !== undefined) out[k] = String(b[k] ?? "").trim();
   if (b.port !== undefined) out.port = b.port ? Number(b.port) : null;
   for (const k of ["https", "verify_tls", "enabled"]) if (b[k] !== undefined) out[k] = b[k] ? 1 : 0;
-  if (!partial && !out.password) throw new Error("the collector needs a password");
+  if (!partial && !out.password && !(collectors.kinds[out.kind] && collectors.kinds[out.kind].generatesKey)) throw new Error("the collector needs a password");
   return out;
 }
 
@@ -288,12 +289,21 @@ async function api(req, res, url) {
     if (method === "POST") {
       if (!db.prepare("select 1 from devices where id = ?").get(id)) throw new Error("no such device");
       const c = cleanCollector(await readBody(req), false);
+      // kinds that log in with a key netmap makes: the private key is the stored secret
+      if (collectors.kinds[c.kind].generatesKey && !c.password) c.password = collectors.kinds[c.kind].generateKey();
       const keys = Object.keys(c);
       const info = db.prepare(`insert into collectors (device_id, ${keys.join(", ")}) values (?, ${keys.map(() => "?").join(", ")})`).run(id, ...keys.map((k) => c[k]));
       const poll = await pollDevice(id).catch((e) => ({ ok: false, error: e.message }));
       return send(res, 201, { collector: plain(db.prepare(`select ${COLLECTOR_COLS} from collectors where id = ?`).get(Number(info.lastInsertRowid))),
         poll: { ok: poll.ok, error: poll.error || null, probes: poll.result && poll.result.probes } });
     }
+  }
+  if ((r = m(/^\/api\/collectors\/(\d+)\/setup$/)) && method === "GET") {
+    const c = plain(db.prepare("select * from collectors where id = ?").get(Number(r[1])));
+    const k = c && collectors.kinds[c.kind];
+    if (!k || !k.setupText) return send(res, 404, { error: "no setup commands for this data source" });
+    const host = c.host || (db.prepare("select host from devices where id = ?").get(c.device_id) || {}).host;
+    return send(res, 200, { text: k.setupText({ ...c, host }) });
   }
   if ((r = m(/^\/api\/collectors\/(\d+)$/))) {
     const id = Number(r[1]);

@@ -13,6 +13,7 @@ Supported devices:
 | **TP-Link Easy Smart** switches (TL-SG105E/108E/116E …) | their web pages | ports, speeds, packet counters (MAC table only with patched firmware, see below) |
 | **Proxmox VE** nodes | the API, with a read-only `user@pve` account | VMs and containers, their NICs and bridges |
 | **Netgear smart switches** (S350 …) | web UI, as an extra data source next to SNMP | per-port PoE watts, volts, mA and class |
+| **Ubiquiti EdgeRouter** (EdgeOS) | SNMP, plus its web UI (read-only) and a locked-down SSH key as extra data sources | ports, traffic, ARP; DHCP client names; MAC table per jack ([setup](docs/edgeos-setup.md)) |
 | **Unmanaged switches** | never polled | drawn where you say, or where their MAC is seen |
 
 Drivers live in `server/drivers/`, extra data sources (collectors) in `server/collectors/`.
@@ -152,6 +153,9 @@ A device has one driver and can have extra data sources for things its driver ca
   PoE unit pages: watts, volts, mA and class per port, and the total. netmap keeps one web session open between
   polls (the switch has only a few), so you may see it in the switch's session list.
 
+- **EdgeOS web UI (DHCP names)** and **EdgeOS MAC table (SSH key)**: for Ubiquiti EdgeRouters added over SNMP.
+  See [docs/edgeos-setup.md](docs/edgeos-setup.md).
+
 Collectors run after the driver on every poll; what they find shows up like the driver's own data.
 
 ## PoE energy
@@ -173,7 +177,7 @@ powered devices, not the switch's own use. Ports that report watts show them on 
 - `server/server.js`: HTTP API, static files and the poll loop. The API is listed at the top of the file.
 - `server/db.js`: the SQLite schema (devices, collectors, polls, clients, sightings, names, links, uplinks, oui).
 - `server/drivers/`: `openwrt.js`, `snmp.js`, `tplink.js`, `proxmox.js`. Each returns the same normalised shape.
-- `server/collectors/`: extra data sources (`netgear-web.js`); `index.js` merges their results.
+- `server/collectors/`: extra data sources (`netgear-web.js`, `edgeos-web.js`, `edgeos-ssh.js`); `index.js` merges their results.
 - `server/setup.js`: automatic OpenWrt setup with the root login, over SSH (`ssh2`) or ubus.
 - `server/graph.js`: turns stored polls into map nodes and edges.
 - `server/rates.js`, `server/energy.js`, `server/oui.js`: traffic rates, PoE energy, MAC manufacturer lookup.

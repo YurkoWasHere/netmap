@@ -386,3 +386,5 @@ code { font-family: var(--font-mono); font-size: .9em; }
 .nm-vtab-body .nm-collector { flex-wrap: wrap; }
 .nm-vtab-body .nm-collector .row { flex-wrap: nowrap; }
 .nm-detail tr.nowrap td { white-space: nowrap; }
+.nm-setup-cmds { margin: 8px 0 10px; display: grid; gap: 6px; }
+.nm-setup-cmds pre { max-height: 320px; font-size: .68rem; }
