@@ -17,8 +17,13 @@ function panelPorts(d) {
     // jacks on a switch chip (swconfig, read by the helper), else DSA ports (lan1.., wan), else plain ethernet
     const chip = ports.filter((p) => p.type === "swport");
     const dsa = ports.filter((p) => p.type !== "swport" && /^(lan\d+|wan\d*)$/.test(p.name));
-    const list = chip.length ? chip : dsa.length ? dsa : ports.filter((p) => /^eth\d+$/.test(p.name));
-    return list.sort((a, b) => (/^wan/.test(a.name) ? -1 : 0) - (/^wan/.test(b.name) ? -1 : 0) || natural(a, b));
+    // next to DSA ports, an ethN that's bridged or has its own interface is a jack of its own (the GL-MT6000's
+    // 2.5G eth1); the unbridged ethN that carries the DSA ports is the CPU's link to the switch chip, not a jack
+    const used = new Set((d.interfaces || []).map((i) => i.device));
+    const ownEth = dsa.length ? ports.filter((p) => /^eth\d+$/.test(p.name) && (p.bridge || used.has(p.name))) : [];
+    const list = chip.length ? chip : dsa.length ? [...ownEth, ...dsa] : ports.filter((p) => /^eth\d+$/.test(p.name));
+    const first = (p) => (/^(wan|eth)/.test(p.name) ? -1 : 0);
+    return list.sort((a, b) => first(a) - first(b) || natural(a, b));
   }
   return [];
 }
