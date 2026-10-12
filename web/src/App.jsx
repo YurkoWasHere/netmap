@@ -37,7 +37,7 @@ const TPLINK_PROBES = {
   system: ["System info (name, model, firmware, MAC, IP)", "the web login (only one session at a time: log out of the switch's page in your browser)"],
   ports: ["Ports and link speeds", "the Port Setting page"],
   traffic: ["Traffic (packet counters)", "the Port Statistics page"],
-  mactable: ["MAC address table (patched firmware)", "the MacTableRpm.htm page and its MacTableNN.dat blocks"],
+  mactable: ["MAC address table (patched firmware)", "the custom firmware from https://github.com/YurkoWasHere/TL-SG108E-V5-custom-firmware (TL-SG108E v5)"],
   vlans: ["802.1Q VLANs", "the 802.1Q VLAN page"]
 };
 const PROBES = { openwrt: OPENWRT_PROBES, snmp: SNMP_PROBES, proxmox: PROXMOX_PROBES, tplink: TPLINK_PROBES };

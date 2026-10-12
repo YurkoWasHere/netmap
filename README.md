@@ -50,7 +50,7 @@ netmap never logs out, because Logout.htm ends every session on the switch, your
 
 Stock firmware has **no MAC address table**, so clients behind such a switch are placed by the "behind it" rule.
 Some switches here run a **custom, patched firmware** that adds `MacTableRpm.htm` and `/MacTableNN.dat` blocks;
-that is not a TP-Link feature. The driver checks for it on every poll and only then reads the table (front
+that is not a TP-Link feature: see [TL-SG108E-V5-custom-firmware](https://github.com/YurkoWasHere/TL-SG108E-V5-custom-firmware) (TL-SG108E v5 only). The driver checks for it on every poll and only then reads the table (front
 socket = ASIC port + 1, checked on a TL-SG108E v5); on any other switch it carries on without it.
 
 ## Adding a Proxmox VE node

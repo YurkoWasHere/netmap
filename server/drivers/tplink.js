@@ -10,6 +10,8 @@
 //   "behind it" rule (noMacTable: true), like an unmanaged switch. Switches patched with a MacTableRpm.htm page
 //   expose the ASIC's address table as /MacTable00.dat .. /MacTable40.dat (65 blocks of 64 slots); those are
 //   read and decoded the way that page does it, and clients land on their real sockets.
+//   That patch is custom firmware, not a TP-Link feature: https://github.com/YurkoWasHere/TL-SG108E-V5-custom-firmware
+//   (TL-SG108E v5, firmware 1.0.0 Build 20191021). Always detected per poll, never assumed.
 //   packet counters only, no byte counters: ports carry rxPkts/txPkts and rates.js turns them into packets/s
 const http = require("http");
 
