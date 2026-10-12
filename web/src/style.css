@@ -333,3 +333,5 @@ code { font-family: var(--font-mono); font-size: .9em; }
 @media (prefers-reduced-motion: reduce) { .nm-face .led.blink { animation: none; } }
 .nm-canvas.no-flow .nm-face .led.blink { animation: none; }
 .nm-face .wanlbl { fill: #74c0fc; font: 600 5px var(--font-sans); text-anchor: middle; }
+.nm-face .poe { fill: #ffd43b; stroke: #0d0e10; stroke-width: .3; }
+.nm-poe-port { display: block; color: var(--warn); font-family: var(--font-sans); }

@@ -25,7 +25,8 @@ const OID = {
   dFdbPort: "1.3.6.1.2.1.17.4.3.1.2", dFdbStatus: "1.3.6.1.2.1.17.4.3.1.3",
   lldpChassis: "1.0.8802.1.1.2.1.4.1.1.5", lldpPortId: "1.0.8802.1.1.2.1.4.1.1.7",
   lldpPortDesc: "1.0.8802.1.1.2.1.4.1.1.8", lldpSysName: "1.0.8802.1.1.2.1.4.1.1.9",
-  poeMain: "1.3.6.1.2.1.105.1.3.1.1" // pethMainPseTable: .2 budget W, .3 status, .4 consumption W
+  poeMain: "1.3.6.1.2.1.105.1.3.1.1", // pethMainPseTable: .2 budget W, .3 status, .4 consumption W
+  poePort: "1.3.6.1.2.1.105.1.1.1"    // pethPsePortTable: .6 detection status, .10 class
 };
 // Ethernet-ish port types; leaves out VLAN interfaces, loopbacks, tunnels and LAG/CPU pseudo-ports.
 const PORT_TYPES = new Set([6, 62, 69, 71, 117]);
@@ -173,6 +174,19 @@ async function poll(dev) {
         const sum = (a) => (a.length ? a.reduce((x, y) => x + y, 0) : null);
         out.poe = { budgetW: sum(col(2)), usedW: sum(col(4)), on: col(3).some((v) => v === 1) };
         out.probes.poe = "ok";
+        // Per port (pethPsePortTable, index group.port; the port number is the ifIndex on the switches seen so far):
+        // whether it's delivering power, and the PoE class (the most the device may draw). Not watts: few switches
+        // report per-port power over SNMP.
+        const DETECT = { 1: "disabled", 2: "searching", 3: "delivering", 4: "fault", 5: "test", 6: "fault" };
+        const ports = await walk(session, OID.poePort).catch(() => new Map());
+        const byIf = {};
+        for (const [k, v] of ports) {
+          const [colN, , portN] = k.split(".");
+          const e = byIf[portN] || (byIf[portN] = {});
+          if (colN === "6") e.status = DETECT[Number(v)] || String(v);
+          if (colN === "10") e.cls = Number(v) - 1; // class0..class4 are 1..5
+        }
+        for (const p of out.ports) if (byIf[p.ifIndex]) p.poe = byIf[p.ifIndex];
       }
     } catch (e) { /* no PoE */ }
 

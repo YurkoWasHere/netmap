@@ -67,10 +67,11 @@ export const Faceplate = memo(function Faceplate({ data }) {
     const w = wide ? box * 1.3 : box;
     sockets.push(
       <g key={p.name} className={"sock " + cls + (up ? " uplink" : "")}>
-        <title>{`${/^\d+$/.test(p.name) ? "Port " : ""}${p.name}${p.alias ? " · " + p.alias : ""} · ${p.carrier ? p.speed || "link" : "no link"}${traffic(p) != null && p.carrier ? " · " + fmt(traffic(p)) : ""}${up ? " · uplink" : ""}`}</title>
+        <title>{`${/^\d+$/.test(p.name) ? "Port " : ""}${p.name}${p.alias ? " · " + p.alias : ""} · ${p.carrier ? p.speed || "link" : "no link"}${traffic(p) != null && p.carrier ? " · " + fmt(traffic(p)) : ""}${p.poe && p.poe.status === "delivering" ? ` · PoE class ${p.poe.cls}` : ""}${up ? " · uplink" : ""}`}</title>
         <rect x={x} y={y} width={w} height={box} rx={1.5} className="body" />
         {p.carrier && <rect x={x + 1.5} y={y + 1.5} width={w - 3} height={box - 3} rx={1} className="plug" />}
         <circle cx={x + w / 2} cy={y - 2.6} r={1.5} className={"led" + (dur ? " blink" : "")} style={dur ? { animationDuration: dur } : undefined} />
+        {p.poe && p.poe.status === "delivering" && <path d={`M${x + w - 3.2} ${y + box - 5.2} l-1.6 2.6 h1.4 l-0.9 2.4 l2.4 -3.1 h-1.4 l0.9 -1.9 z`} className="poe" />}
       </g>
     );
   };

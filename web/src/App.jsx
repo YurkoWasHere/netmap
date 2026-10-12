@@ -437,6 +437,9 @@ function webUrl(node, device) {
   return null;
 }
 
+// PoE class -> the most a powered device may draw at its end of the cable (IEEE 802.3af/at)
+const POE_CLASS_W = { 0: 12.95, 1: 3.84, 2: 6.49, 3: 12.95, 4: 25.5 };
+
 const VIA = { fdb: "from the MAC tables", lldp: "from LLDP", manual: "set by you", role: "core switch, placed under the gateway",
   behind: "behind the unmanaged switch on that port" };
 
@@ -545,7 +548,7 @@ function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices }) {
         <h3>Ports</h3>
         <table><tbody>{ports.map((p) => (
           <tr key={p.name}><td className="mono">{p.name}</td><td><span className={"pill " + (p.carrier ? "ok" : "off")}>{p.carrier ? "link" : "no link"}</span></td><td>{p.speed && p.speed !== "-1" ? p.speed : ""}</td><td className={p.alias ? "" : "mono"}>{p.alias || p.bridge || ""}</td>
-          <td className="mono nm-port-rate">{portRateText(p)}</td></tr>
+          <td className="mono nm-port-rate">{portRateText(p)}{p.poe && p.poe.status === "delivering" ? <span className="nm-poe-port" title="PoE class: the most power the device may draw">⚡ class {p.poe.cls} (≤{POE_CLASS_W[p.poe.cls] ?? "?"} W)</span> : null}</td></tr>
         ))}</tbody></table>
       </>)}
       {node.wifi.length > 0 && (<>
