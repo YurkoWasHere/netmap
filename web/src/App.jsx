@@ -42,6 +42,19 @@ const TPLINK_PROBES = {
 };
 const PROBES = { openwrt: OPENWRT_PROBES, snmp: SNMP_PROBES, proxmox: PROXMOX_PROBES, tplink: TPLINK_PROBES };
 
+// Collectors: extra data sources next to a device's driver (server/collectors). Their probes are "<kind>:<name>".
+const COLLECTORS = {
+  "netgear-web": {
+    label: "Netgear web UI (PoE per port)",
+    hint: "Logs in to the switch's web page (read-only) for per-port PoE watts, volts and mA, which its SNMP doesn't report. It keeps one web session open, so you may see netmap in the switch's session list.",
+    defaults: { https: true, username: "admin" },
+    probes: {
+      poePorts: ["PoE per port (watts, volts, mA, class)", "the switch's web login"],
+      poeTotal: ["PoE total and budget", "the switch's web login"]
+    }
+  }
+};
+
 const ago = (iso) => {
   if (!iso) return "never";
   const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
@@ -382,7 +395,8 @@ function DeviceForm({ initial, driver: newDriver = "openwrt", onDone, onCancel }
 }
 
 function Probes({ probes, driver }) {
-  const labels = PROBES[driver] || OPENWRT_PROBES;
+  const labels = { ...(PROBES[driver] || OPENWRT_PROBES) };
+  for (const [kind, c] of Object.entries(COLLECTORS)) for (const [k, v] of Object.entries(c.probes)) labels[`${kind}:${k}`] = v;
   const keys = Object.keys(labels);
   if (!probes || !Object.keys(probes).length) return null;
   return (
@@ -406,7 +420,9 @@ function Probes({ probes, driver }) {
 
 // Power the switch delivers to PoE devices, and the energy recorded from it (Wh / kWh).
 const fmtWh = (wh) => (wh == null ? "—" : wh >= 1000 ? `${(wh / 1000).toFixed(2)} kWh` : `${wh.toFixed(wh >= 100 ? 0 : 1)} Wh`);
-function PoeSection({ poe }) {
+function PoeSection({ poe, ports: all = [] }) {
+  // ports with measured power (from a collector such as the Netgear web UI)
+  const ports = all.filter((p) => p.poe && p.poe.mW != null && p.poe.status === "delivering");
   const pct = poe.budgetW ? Math.round((poe.usedW / poe.budgetW) * 100) : null;
   return (
     <>
@@ -417,7 +433,10 @@ function PoeSection({ poe }) {
         <dt>Last 7 days</dt><dd>{fmtWh(poe.weekWh)}</dd>
         <dt>Total</dt><dd>{fmtWh(poe.totalWh)}{poe.since ? <span className="hint"> since {poe.since}</span> : ""}</dd>
       </dl>
-      <p className="hint" style={{ marginTop: 4 }}>Power delivered to PoE devices (not the switch's own use), sampled every poll; the switch reports a total, not per port.</p>
+      <p className="hint" style={{ marginTop: 4 }}>Power delivered to PoE devices (not the switch's own use), sampled every poll{ports.length ? "" : "; the switch reports a total, not per port"}.</p>
+      {ports.length > 0 && <table><tbody>{ports.map((p) => (
+        <tr key={p.name}><td className="mono">{p.name}</td><td>{(p.poe.mW / 1000).toFixed(1)} W</td><td className="mono">{p.poe.volts} V · {p.poe.mA} mA</td><td>{p.poe.cls != null ? `class ${p.poe.cls}` : ""}</td></tr>
+      ))}</tbody></table>}
     </>
   );
 }
@@ -505,6 +524,65 @@ function Roles({ node, onChanged }) {
   );
 }
 
+// Extra data sources for a device, read after its driver on every poll (e.g. a switch's web UI for PoE watts).
+function Collectors({ node, device, onChanged }) {
+  const [list, setList] = useState([]);
+  const [adding, setAdding] = useState(null); // form values, or null
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const load = () => api.collectors(node.deviceId).then(setList).catch(() => setList([]));
+  useEffect(() => { load(); setAdding(null); setErr(""); }, [node.deviceId]);
+  const start = (kind) => setAdding({ kind, host: "", username: COLLECTORS[kind].defaults.username || "", password: "", https: !!COLLECTORS[kind].defaults.https });
+  const save = async (e) => {
+    e.preventDefault(); setBusy(true); setErr("");
+    try {
+      const r = await api.addCollector(node.deviceId, adding);
+      setAdding(null);
+      if (r.poll && !r.poll.ok) setErr(`Added, but the poll failed: ${r.poll.error}`);
+    } catch (x) { setErr(x.message); } finally { setBusy(false); load(); onChanged(); }
+  };
+  const act = async (fn) => { setBusy(true); try { await fn(); } catch (x) { setErr(x.message); } finally { setBusy(false); load(); onChanged(); } };
+  return (
+    <div className="nm-collectors">
+      <h3>Extra data sources</h3>
+      {list.length === 0 && !adding && <p className="hint" style={{ margin: "0 0 6px" }}>Only the {node.driver} driver reads this device.</p>}
+      {list.map((c) => (
+        <div key={c.id} className="nm-collector">
+          <div>
+            <div>{(COLLECTORS[c.kind] || {}).label || c.kind}{!c.enabled && <span className="hint"> (off)</span>}</div>
+            <div className="hint mono">{c.username}@{c.host || (device && device.host) || node.host}{c.https ? " (https)" : ""}</div>
+          </div>
+          <div className="row">
+            <button className="btn sm quiet" disabled={busy} onClick={() => act(() => api.updateCollector(c.id, { enabled: !c.enabled }))}>{c.enabled ? "Turn off" : "Turn on"}</button>
+            <button className="btn sm quiet" disabled={busy} onClick={() => act(() => api.deleteCollector(c.id))}>Remove</button>
+          </div>
+        </div>
+      ))}
+      {adding ? (
+        <form className="nm-form" onSubmit={save}>
+          <p className="hint" style={{ margin: 0 }}>{COLLECTORS[adding.kind].hint}</p>
+          <label>Address<input value={adding.host} placeholder={(device && device.host) || node.host} onChange={(e) => setAdding({ ...adding, host: e.target.value })} /></label>
+          <label>User<input value={adding.username} onChange={(e) => setAdding({ ...adding, username: e.target.value })} /></label>
+          <label>Password<input type="password" autoComplete="new-password" value={adding.password} onChange={(e) => setAdding({ ...adding, password: e.target.value })} /></label>
+          <label className="chk"><input type="checkbox" checked={adding.https} onChange={(e) => setAdding({ ...adding, https: e.target.checked })} /> HTTPS</label>
+          <div className="row">
+            <button className="btn" disabled={busy || !adding.password}>{busy ? "Testing…" : "Add and poll"}</button>
+            <button type="button" className="btn quiet" onClick={() => setAdding(null)}>Cancel</button>
+          </div>
+        </form>
+      ) : (
+        <label className="nm-pause-pick">Add a data source
+          <select value="" onChange={(e) => e.target.value && start(e.target.value)}>
+            <option value="">Choose…</option>
+            {Object.entries(COLLECTORS).map(([k, c]) => <option key={k} value={k}>{c.label}</option>)}
+          </select>
+        </label>
+      )}
+      {err && <p className="nm-error">{err}</p>}
+    </div>
+  );
+}
+
 function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices }) {
   const [editing, setEditing] = useState(false);
   const [updating, setUpdating] = useState(false);
@@ -573,9 +651,10 @@ function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices }) {
         </Modal>
       )}
       {!unmanaged && <><h3>What this device reports</h3>
-      <Probes probes={node.probes} driver={node.driver} /></>}
+      <Probes probes={node.probes} driver={node.driver} />
+      <Collectors node={node} device={device} onChanged={onChanged} /></>}
 
-      {node.poe && <PoeSection poe={node.poe} />}
+      {node.poe && <PoeSection poe={node.poe} ports={node.ports} />}
       {node.driver === "proxmox" && node.cluster && <p className="hint" style={{ margin: "0 0 6px" }}>Cluster {node.cluster.name}: {node.cluster.nodes.map((n) => n.name + (n.online ? "" : " (offline)")).join(", ")}</p>}
       {node.guests && node.guests.length > 0 && (<>
         <h3>VMs and containers ({node.guests.filter((g) => g.status === "running").length} running of {node.guests.length})</h3>
@@ -597,7 +676,8 @@ function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices }) {
         <h3>Ports</h3>
         <table><tbody>{ports.map((p) => (
           <tr key={p.name}><td className="mono">{p.name}</td><td><span className={"pill " + (p.carrier ? "ok" : "off")}>{p.carrier ? "link" : "no link"}</span></td><td>{p.speed && p.speed !== "-1" ? p.speed : ""}</td><td className={p.alias ? "" : "mono"}>{p.alias || p.bridge || ""}</td>
-          <td className="mono nm-port-rate">{portRateText(p)}{p.poe && p.poe.status === "delivering" ? <span className="nm-poe-port" title="PoE class: the most power the device may draw">⚡ class {p.poe.cls} (≤{POE_CLASS_W[p.poe.cls] ?? "?"} W)</span> : null}</td></tr>
+          <td className="mono nm-port-rate">{portRateText(p)}{p.poe && p.poe.status === "delivering" ? <span className="nm-poe-port" title={p.poe.mW != null ? `${p.poe.volts} V · ${p.poe.mA} mA; class ${p.poe.cls ?? "?"} (the most it may draw: ${POE_CLASS_W[p.poe.cls] ?? "?"} W)` : "PoE class: the most power the device may draw"}>
+            ⚡ {p.poe.mW != null ? `${(p.poe.mW / 1000).toFixed(1)} W` : `class ${p.poe.cls} (≤${POE_CLASS_W[p.poe.cls] ?? "?"} W)`}</span> : null}</td></tr>
         ))}</tbody></table>
       </>)}
       {node.wifi.length > 0 && (<>

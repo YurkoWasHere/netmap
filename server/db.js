@@ -73,6 +73,21 @@ create table if not exists uplinks (
   via         text not null,
   seen_at     text not null
 );
+-- extra ways to read a device next to its driver (see collectors/index.js), each with its own login;
+-- host blank = the device's host
+create table if not exists collectors (
+  id          integer primary key,
+  device_id   integer not null references devices(id) on delete cascade,
+  kind        text not null,
+  host        text not null default '',
+  port        integer,
+  https       integer not null default 1,
+  verify_tls  integer not null default 0,
+  username    text not null default '',
+  password    text not null default '',
+  enabled     integer not null default 1,
+  created_at  text not null default (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 create table if not exists names (
   mac         text primary key,
   hostname    text not null default '',

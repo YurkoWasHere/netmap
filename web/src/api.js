@@ -26,6 +26,10 @@ export function makeApi(base = "") {
     labelClient: (mac, label) => req("PATCH", `/api/clients/${mac}`, { label }),
     placeClient: (mac, device, port) => req("PATCH", `/api/clients/${mac}`, { placed_device: device, placed_port: port }),
     setUplink: (id, device, port) => req("PUT", `/api/devices/${id}/uplink`, { device, port }),
+    collectors: (id) => req("GET", `/api/devices/${id}/collectors`),
+    addCollector: (id, c) => req("POST", `/api/devices/${id}/collectors`, c),
+    updateCollector: (id, c) => req("PATCH", `/api/collectors/${id}`, c),
+    deleteCollector: (id) => req("DELETE", `/api/collectors/${id}`),
     addLink: (l) => req("POST", "/api/links", l),
     deleteLink: (id) => req("DELETE", `/api/links/${id}`)
   };

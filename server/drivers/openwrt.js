@@ -169,7 +169,11 @@ function parseSwconfig(text, out) {
     const m = wan && String(wan.device).match(/\.(\d+)$/);
     return m ? Number(m[1]) : null;
   })();
-  for (const block of String(text).split(/^== switch /m).slice(1)) {
+  // /etc/board.json (newer helpers print it after the switches): which chip port is the jack labelled LAN 1, WAN, ...
+  const [swText, boardText] = String(text).split(/^== board\s*$/m);
+  let board = {};
+  try { board = (JSON.parse(boardText || "{}").switch) || {}; } catch { /* old helper or odd JSON: chip order */ }
+  for (const block of swText.split(/^== switch /m).slice(1)) {
     const sw = block.split("\n")[0].trim();
     const ports = {}, vlans = [];
     // The chip's MAC table (arl_table, on chips that have one) lists "Port N: MAC aa:bb:..": which jack each
@@ -199,18 +203,25 @@ function parseSwconfig(text, out) {
     const untaggedIn = (n) => vlans.filter((v) => v.members.some((x) => x.n === n && !x.tagged)).map((v) => v.vid);
     const taggedOnly = (n) => vlans.some((v) => v.members.some((x) => x.n === n && x.tagged)) && !untaggedIn(n).length;
     const jacks = Object.values(ports).filter((p) => !taggedOnly(p.n) && untaggedIn(p.n).length).sort((a, b) => a.n - b.n);
+    // jack labels: board.json's role/index per chip port (LuCI's "LAN 1".."WAN"), else chip order
+    const labels = {};
+    for (const bp of (board[sw] && board[sw].ports) || []) {
+      if (bp.role === "lan" || bp.role === "wan") labels[bp.num] = bp.role + (bp.role === "lan" ? bp.index || "" : bp.index > 1 ? bp.index : "");
+    }
     let lan = 0;
     for (const p of jacks) {
       const isWan = wanVid != null && untaggedIn(p.n).includes(wanVid);
+      const name = labels[p.n] || (isWan ? "wan" : `lan${++lan}`);
+      const usedAs = /^wan/.test(name) && !isWan ? " (used as LAN)" : /^lan/.test(name) && isWan ? " (used as WAN)" : "";
       out.ports.push({
-        name: isWan ? "wan" : `lan${++lan}`, type: "swport", switch: sw, switchPort: p.n, up: true, carrier: p.up,
+        name, type: "swport", switch: sw, switchPort: p.n, up: true, carrier: p.up,
         speed: p.speed >= 1000 ? `${p.speed / 1000}G` : p.speed ? `${p.speed}M` : "", mac: "", bridge: null, members: [],
-        alias: `${sw} port ${p.n}${untaggedIn(p.n).length ? ", VLAN " + untaggedIn(p.n).join("/") : ""}`, rxBytes: p.rx, txBytes: p.tx
+        alias: `${sw} port ${p.n}${untaggedIn(p.n).length ? ", VLAN " + untaggedIn(p.n).join("/") : ""}${usedAs}`, rxBytes: p.rx, txBytes: p.tx
       });
       // wired clients the bridge saw on the switch's eth0.N: put them on this jack instead
       for (const a of arl.filter((x) => x.n === p.n)) {
         for (const c of out.clients) {
-          if (c.via === "fdb" && c.mac === a.mac) { c.detail = { ...(c.detail || {}), bridgePort: c.iface, switchPort: p.n }; c.iface = isWan ? "wan" : `lan${lan}`; }
+          if (c.via === "fdb" && c.mac === a.mac) { c.detail = { ...(c.detail || {}), bridgePort: c.iface, switchPort: p.n }; c.iface = name; }
         }
       }
     }

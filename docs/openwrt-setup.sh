@@ -43,6 +43,8 @@ cat > /usr/libexec/netmap/swconfig <<'EOF'
 # netmap: link, speed, VLANs and counters of each jack on the router's switch chip (swconfig). Ignores arguments.
 command -v swconfig >/dev/null 2>&1 || exit 0
 for sw in $(swconfig list 2>/dev/null | awk '{print $2}'); do echo "== switch $sw"; swconfig dev "$sw" show; done
+# the jack labels (LAN 1, WAN, ...) for each chip port, as LuCI shows them
+[ -r /etc/board.json ] && { echo "== board"; cat /etc/board.json; }
 EOF
 chmod 755 /usr/libexec/netmap/fdb /usr/libexec/netmap/lldp /usr/libexec/netmap/swconfig
 

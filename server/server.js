@@ -15,6 +15,10 @@
 //                                        device (device_id: re-run it for a device already on the map), then
 //                                        device with the root login, then adds it; returns a job to watch
 //   GET    /api/setup/:job               { state: running|done|error, log, deviceId }
+//   GET    /api/devices/:id/collectors   the device's extra data sources (no passwords)
+//   POST   /api/devices/:id/collectors   { kind, host?, port?, https?, verify_tls?, username, password } adds one
+//   PATCH  /api/collectors/:id           change any of those, or { enabled }; blank password keeps the current one
+//   DELETE /api/collectors/:id
 //   GET    /api/devices/:id/raw          latest normalised poll result (for debugging a device)
 //   POST   /api/oui/update               re-download the MAC manufacturer list now (it also refreshes monthly)
 //   PUT    /api/positions                { nodes: [{ id: "d1" | "c<mac>", x, y }] } saves the layout
@@ -37,6 +41,8 @@ const setup = require("./setup.js");
 const oui = require("./oui.js");
 const rates = require("./rates.js");
 const energy = require("./energy.js");
+const collectors = require("./collectors/index.js");
+const COLLECTOR_COLS = "id, device_id, kind, host, port, https, verify_tls, username, enabled, created_at, (password != '') as has_password";
 
 const CONFIG_PATH = process.env.NETMAP_CONFIG || path.join(__dirname, "config.json");
 const config = fs.existsSync(CONFIG_PATH) ? JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")) : {};
@@ -65,7 +71,8 @@ async function pollDevice(id) {
   busy.add(id);
   const now = new Date().toISOString();
   try {
-    const r = rates.apply(id, await driver.poll(dev));
+    const cols = all(db.prepare("select * from collectors where device_id = ? and enabled = 1 order by id"), id);
+    const r = rates.apply(id, await collectors.runAll(dev, cols, await driver.poll(dev)));
     if (r.poe) energy.record(db, id, r.poe.usedW);
     db.exec("begin");
     try {
@@ -165,6 +172,19 @@ function readBody(req) {
     req.on("error", reject);
   });
 }
+function cleanCollector(b, partial) {
+  const out = {};
+  if (!partial || b.kind !== undefined) {
+    if (!collectors.kinds[b.kind]) throw new Error(`unknown collector ${b.kind}`);
+    out.kind = b.kind;
+  }
+  for (const k of ["host", "username", "password"]) if (b[k] !== undefined) out[k] = String(b[k] ?? "").trim();
+  if (b.port !== undefined) out.port = b.port ? Number(b.port) : null;
+  for (const k of ["https", "verify_tls", "enabled"]) if (b[k] !== undefined) out[k] = b[k] ? 1 : 0;
+  if (!partial && !out.password) throw new Error("the collector needs a password");
+  return out;
+}
+
 // existingDriver: the stored driver when editing (the edit may not send it).
 function cleanDevice(b, partial, existingDriver) {
   const out = {};
@@ -261,6 +281,37 @@ async function api(req, res, url) {
     if (b.device) db.prepare("insert into links (a_device, a_port, b_device, b_port) values (?, ?, ?, ?)")
       .run(Number(b.device), String(b.port || "").trim(), id, String(b.uplink_port || "").trim());
     return send(res, 200, { ok: true });
+  }
+  if ((r = m(/^\/api\/devices\/(\d+)\/collectors$/))) {
+    const id = Number(r[1]);
+    if (method === "GET") return send(res, 200, all(db.prepare(`select ${COLLECTOR_COLS} from collectors where device_id = ? order by id`), id));
+    if (method === "POST") {
+      if (!db.prepare("select 1 from devices where id = ?").get(id)) throw new Error("no such device");
+      const c = cleanCollector(await readBody(req), false);
+      const keys = Object.keys(c);
+      const info = db.prepare(`insert into collectors (device_id, ${keys.join(", ")}) values (?, ${keys.map(() => "?").join(", ")})`).run(id, ...keys.map((k) => c[k]));
+      const poll = await pollDevice(id).catch((e) => ({ ok: false, error: e.message }));
+      return send(res, 201, { collector: plain(db.prepare(`select ${COLLECTOR_COLS} from collectors where id = ?`).get(Number(info.lastInsertRowid))),
+        poll: { ok: poll.ok, error: poll.error || null, probes: poll.result && poll.result.probes } });
+    }
+  }
+  if ((r = m(/^\/api\/collectors\/(\d+)$/))) {
+    const id = Number(r[1]);
+    const cur = plain(db.prepare("select * from collectors where id = ?").get(id));
+    if (!cur) return send(res, 404, { error: "no such collector" });
+    if (method === "PATCH") {
+      const c = cleanCollector(await readBody(req), true);
+      if (c.password === "") delete c.password;
+      const keys = Object.keys(c);
+      if (keys.length) db.prepare(`update collectors set ${keys.map((k) => k + " = ?").join(", ")} where id = ?`).run(...keys.map((k) => c[k]), id);
+      collectors.forget(cur); // log in again with the new settings
+      return send(res, 200, plain(db.prepare(`select ${COLLECTOR_COLS} from collectors where id = ?`).get(id)));
+    }
+    if (method === "DELETE") {
+      await collectors.forget({ ...cur, host: cur.host || (db.prepare("select host from devices where id = ?").get(cur.device_id) || {}).host });
+      db.prepare("delete from collectors where id = ?").run(id);
+      return send(res, 200, { ok: true });
+    }
   }
   if ((r = m(/^\/api\/devices\/(\d+)\/raw$/)) && method === "GET") {
     const p = plain(db.prepare("select * from polls where device_id = ?").get(Number(r[1])));
