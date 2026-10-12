@@ -40,7 +40,14 @@ const TPLINK_PROBES = {
   mactable: ["MAC address table (patched firmware)", "the custom firmware from https://github.com/YurkoWasHere/TL-SG108E-V5-custom-firmware (TL-SG108E v5)"],
   vlans: ["802.1Q VLANs", "the 802.1Q VLAN page"]
 };
-const PROBES = { openwrt: OPENWRT_PROBES, snmp: SNMP_PROBES, proxmox: PROXMOX_PROBES, tplink: TPLINK_PROBES };
+const DLINK_PROBES = {
+  system: ["System info (name, model, firmware, MAC, IP, uptime)", "the web login (the admin password)"],
+  ports: ["Ports and link speeds", "the Port Settings page"],
+  traffic: ["Traffic (packet counters)", "the Statistics page"],
+  fdb: ["MAC table (what is on each port)", "the Dynamic Forwarding Table page"],
+  poe: ["PoE per port (watts, volts, mA, class)", "the PoE pages (PoE models, e.g. DGS-1100-08P)"]
+};
+const PROBES = { openwrt: OPENWRT_PROBES, snmp: SNMP_PROBES, proxmox: PROXMOX_PROBES, tplink: TPLINK_PROBES, dlink: DLINK_PROBES };
 
 // Collectors: extra data sources next to a device's driver (server/collectors). Their probes are "<kind>:<name>".
 const COLLECTORS = {
@@ -302,6 +309,7 @@ const ADD_MODES = [
   { id: "manual", group: "OpenWrt", label: "OpenWrt router or AP: already set up", hint: "The device already has a read-only rpcd login (see docs/openwrt-setup.md)." },
   { id: "snmp", group: "SNMP", label: "SNMP switch or other device (v2c)", hint: "Managed switches and anything with standard MIBs. Needs a read-only community." },
   { id: "tplink", group: "TP-Link", label: "TP-Link Easy Smart switch (TL-SG105E / 108E / 116E …)", hint: "Read from its web page with the admin login: ports, link speeds and packet counts. These switches have no MAC table, so clients behind one are placed by its port." },
+  { id: "dlink", group: "D-Link", label: "D-Link Easy Smart switch (DGS-1100 series)", hint: "Read from its web page with the admin password: ports, link speeds, packet counts, the MAC table and, on PoE models, power per port. These have no SNMP." },
   { id: "proxmox", group: "Proxmox VE", label: "Proxmox VE node", hint: "Log in with a PVE-realm account (user@pve) and pick which node of the cluster this is. Its VMs and containers hang off it." },
   { id: "unmanaged", group: "Not probed", label: "Unmanaged switch (just a box on the map)", hint: "A dumb switch or anything else netmap can't ask. You say what it's plugged into." }
 ];
@@ -331,7 +339,7 @@ function AddDeviceModal({ open, onClose, onAdded, onJobState, devices }) {
           ? <ProxmoxForm onDone={(r) => { if (r && r.device) onAdded(r.device.id); onClose(); }} onCancel={onClose} />
         : mode === "unmanaged"
           ? <UnmanagedForm devices={devices} onDone={(r) => { if (r && r.device) onAdded(r.device.id); onClose(); }} onCancel={onClose} />
-          : <DeviceForm key={mode} driver={mode === "snmp" ? "snmp" : mode === "tplink" ? "tplink" : "openwrt"} onDone={(r) => { if (r && r.device) onAdded(r.device.id); onClose(); }} onCancel={onClose} />}
+          : <DeviceForm key={mode} driver={mode === "snmp" ? "snmp" : mode === "tplink" ? "tplink" : mode === "dlink" ? "dlink" : "openwrt"} onDone={(r) => { if (r && r.device) onAdded(r.device.id); onClose(); }} onCancel={onClose} />}
     </Modal>
   );
 }
@@ -342,7 +350,7 @@ function DeviceForm({ initial, driver: newDriver = "openwrt", onDone, onCancel, 
   const editing = !!initial;
   const driver = editing ? initial.driver : newDriver;
   const snmp = driver === "snmp";
-  const [f, setF] = useState(initial ? { ...EMPTY, ...initial, port: initial.port || "", password: "" } : { ...EMPTY, driver, username: snmp ? "" : driver === "tplink" ? "admin" : EMPTY.username });
+  const [f, setF] = useState(initial ? { ...EMPTY, ...initial, port: initial.port || "", password: "" } : { ...EMPTY, driver, username: snmp || driver === "dlink" ? "" : driver === "tplink" ? "admin" : EMPTY.username });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
@@ -360,7 +368,14 @@ function DeviceForm({ initial, driver: newDriver = "openwrt", onDone, onCancel, 
   return (
     <form className="nm-form" onSubmit={submit}>
       {!hideName && <label>Name<input value={f.name} onChange={set("name")} placeholder={snmp ? "Core switch" : "Main router"} required /></label>}
-      {driver === "tplink" ? (<>
+      {driver === "dlink" ? (<>
+        <div className="row">
+          <label>Host / IP<input value={f.host} onChange={set("host")} placeholder="10.90.90.90" required /></label>
+          <label style={{ flex: "0 0 90px" }}>Port<input value={f.port} onChange={set("port")} placeholder="80" inputMode="numeric" /></label>
+        </div>
+        <label>Password<input type="password" value={f.password} onChange={set("password")} autoComplete="new-password" placeholder={editing ? "unchanged" : "the switch's admin password"} required={!editing} /></label>
+        <p className="hint">The web login has no user name, only the admin password. netmap keeps its session between polls and only logs in again when it has expired.</p>
+      </>) : driver === "tplink" ? (<>
         <div className="row">
           <label>Host / IP<input value={f.host} onChange={set("host")} placeholder="192.168.0.1" required /></label>
           <label style={{ flex: "0 0 90px" }}>Port<input value={f.port} onChange={set("port")} placeholder="80" inputMode="numeric" /></label>
@@ -471,7 +486,7 @@ function webUrl(node, device) {
   // port can be firewalled), straight to this node's page
   if (node.driver === "proxmox") return `${withPort("https", dev.host || node.apiHost || node.host, dev.port || 8006, 0)}#v1:0:=node%2F${encodeURIComponent(dev.node || node.proxmoxNode || node.name)}`;
   if (node.driver === "openwrt") return dev.https ? withPort("https", dev.host || node.host, dev.port, 443) : withPort("http", dev.host || node.host, dev.port, 80);
-  if (node.driver === "tplink") return withPort("http", node.host, dev.port, 80);
+  if (node.driver === "tplink" || node.driver === "dlink") return withPort("http", node.host, dev.port, 80);
   // SNMP's port is the SNMP port, not the web one; switches that want HTTPS redirect there themselves
   if (node.driver === "snmp" || node.driver === "none") return `http://${node.host}/`;
   return null;
@@ -649,7 +664,7 @@ function pluggedText(node, nameOf, unmanaged, device) {
 
 const physicalPorts = (node) => node.ports.filter((p) => p.type !== "bridge" && !/^(lo|ifb|gre|teql|sit|ip6tnl|erspan)/.test(p.name));
 
-const DRIVER_NAME = { openwrt: "OpenWrt", snmp: "SNMP", tplink: "TP-Link web", proxmox: "Proxmox API" };
+const DRIVER_NAME = { openwrt: "OpenWrt", snmp: "SNMP", tplink: "TP-Link web", dlink: "D-Link web", proxmox: "Proxmox API" };
 
 function NameForm({ name, onSave }) {
   const [v, setV] = useState(name);
