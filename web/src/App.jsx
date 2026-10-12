@@ -324,7 +324,8 @@ function AddDeviceModal({ open, onClose, onAdded, onJobState, devices }) {
 }
 
 // Add or edit a device whose login already exists. `driver` picks the fields: OpenWrt (rpcd user) or SNMP (community).
-function DeviceForm({ initial, driver: newDriver = "openwrt", onDone, onCancel }) {
+// hideName: the Polling tab edits only how the device is read; its name is changed in Settings.
+function DeviceForm({ initial, driver: newDriver = "openwrt", onDone, onCancel, hideName = false }) {
   const editing = !!initial;
   const driver = editing ? initial.driver : newDriver;
   const snmp = driver === "snmp";
@@ -345,7 +346,7 @@ function DeviceForm({ initial, driver: newDriver = "openwrt", onDone, onCancel }
   };
   return (
     <form className="nm-form" onSubmit={submit}>
-      <label>Name<input value={f.name} onChange={set("name")} placeholder={snmp ? "Core switch" : "Main router"} required /></label>
+      {!hideName && <label>Name<input value={f.name} onChange={set("name")} placeholder={snmp ? "Core switch" : "Main router"} required /></label>}
       {driver === "tplink" ? (<>
         <div className="row">
           <label>Host / IP<input value={f.host} onChange={set("host")} placeholder="192.168.0.1" required /></label>
@@ -592,6 +593,7 @@ const TAB_ICON = {
   vms: <><path d="M12 2.8l8 4.4v9.6l-8 4.4-8-4.4V7.2z" /><path d="M4 7.2l8 4.4 8-4.4M12 11.6v9.6" /></>,
   power: <><path d="M13 2.5L5 13.5h6l-1 8 8-11h-6z" /></>,
   checks: <><path d="M4 6.5l1.8 1.8L9 5M4 12.5l1.8 1.8L9 11M4 18.5l1.8 1.8L9 17" /><path d="M12 7h8M12 13h8M12 19h8" /></>,
+  polling: <><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8" /><path d="M4 3.5V8h4.5" /><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16" /><path d="M20 20.5V16h-4.5" /></>,
   settings: <><circle cx="12" cy="12" r="3" /><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" /></>
 };
 function DetailTabs({ tabs, tab, onTab, children }) {
@@ -622,6 +624,19 @@ function pluggedText(node, nameOf, unmanaged, device) {
 
 const physicalPorts = (node) => node.ports.filter((p) => p.type !== "bridge" && !/^(lo|ifb|gre|teql|sit|ip6tnl|erspan)/.test(p.name));
 
+const DRIVER_NAME = { openwrt: "OpenWrt", snmp: "SNMP", tplink: "TP-Link web", proxmox: "Proxmox API" };
+
+function NameForm({ name, onSave }) {
+  const [v, setV] = useState(name);
+  const [saved, setSaved] = useState(false);
+  return (
+    <form className="nm-form" onSubmit={async (e) => { e.preventDefault(); await onSave(v.trim()); setSaved(true); }}>
+      <label>Name on the map<input value={v} onChange={(e) => { setV(e.target.value); setSaved(false); }} required /></label>
+      <div className="row"><button className="btn" disabled={!v.trim() || v.trim() === name}>Save name</button>{saved && <span className="hint">Saved.</span>}</div>
+    </form>
+  );
+}
+
 function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices, clients, tab, onTab }) {
   const [updating, setUpdating] = useState(false);
   const [polling, setPolling] = useState(false);
@@ -641,7 +656,8 @@ function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices, clie
     guests.length > 0 && { id: "vms", label: "VMs", title: "VMs and containers" },
     node.poe && { id: "power", label: "Power", title: "PoE power and energy" },
     !unmanaged && { id: "checks", label: "Checks", title: "What this device reports, probe by probe", alert: failing > 0 },
-    { id: "settings", label: "Settings" }
+    !unmanaged && { id: "polling", label: "Polling", title: "How netmap reads it: login, extra data sources, pause" },
+    { id: "settings", label: "Settings", title: "What you set by hand: name, role, where it's plugged in" }
   ].filter(Boolean);
   const cur = tabs.some((t) => t.id === tab) ? tab : "status";
   const linked = ports.filter((p) => p.carrier).length;
@@ -747,24 +763,31 @@ function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices, clie
           <div className="row" style={{ marginTop: 10 }}><button className="btn quiet" onClick={poll} disabled={polling}>{polling ? "Polling…" : "Poll now"}</button></div>
         </>}
 
-        {cur === "settings" && <>
-          <h3 className="first">Connection</h3>
-          {device ? <DeviceForm key={device.id} initial={device} onDone={() => { setSaved(true); onChanged(); }} /> : <p className="hint">Loading…</p>}
+        {cur === "polling" && <>
+          <h3 className="first">Connection ({DRIVER_NAME[node.driver] || node.driver})</h3>
+          {device ? <DeviceForm key={device.id} initial={device} hideName onDone={() => { setSaved(true); onChanged(); }} /> : <p className="hint">Loading…</p>}
           {saved && <p className="hint">Saved and polled.</p>}
           {node.driver === "openwrt" && <>
             <button className="btn quiet sm" style={{ marginTop: 8 }} onClick={() => setUpdating(true)}
               title="Re-run the setup on the device with its admin password: installs netmap's newest read-only helpers">Update helpers on the device…</button>
           </>}
+          <Collectors node={node} device={device} onChanged={onChanged} />
+          <h3>Pause</h3>
+          <PauseControl node={node} onChanged={onChanged} />
+        </>}
+
+        {cur === "settings" && <>
+          {unmanaged
+            ? <><h3 className="first">Switch</h3>
+                {device ? <DeviceForm key={device.id} initial={device} onDone={() => { setSaved(true); onChanged(); }} /> : <p className="hint">Loading…</p>}
+                {saved && <p className="hint">Saved.</p>}</>
+            : <><h3 className="first">Name</h3><NameForm key={node.id} name={node.name} onSave={async (name) => { await api.updateDevice(node.deviceId, { name }); onChanged(); }} /></>}
 
           <h3>On the map</h3>
           <Roles node={node} onChanged={onChanged} />
           {!node.isRoot && <PluggedIntoEditor devices={devices.filter((d) => d.id !== node.id)} device={drawn ? Number(node.parent.slice(1)) : null} port={drawn ? node.parentPort : ""}
             autoLabel={unmanaged ? "Nothing" : "Automatic (from the switches)"}
             onSave={async (dev, port) => { await api.setUplink(node.deviceId, dev, port); onChanged(); }} />}
-
-          {!unmanaged && <><h3>Polling</h3><PauseControl node={node} onChanged={onChanged} /></>}
-
-          {!unmanaged && <Collectors node={node} device={device} onChanged={onChanged} />}
 
           <h3>Remove</h3>
           <p className="hint" style={{ marginBottom: 6 }}>Takes {node.name} off the map, with its login and history.</p>
