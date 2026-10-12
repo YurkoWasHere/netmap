@@ -13,3 +13,8 @@ web/dist/
 *.swp
 .vscode/
 .idea/
+# instances: one folder per deployed site (where it runs, its config, notes); private, never committed,
+# except the README and the example template
+/instances/*
+!/instances/README.md
+!/instances/example/

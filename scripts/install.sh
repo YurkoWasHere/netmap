@@ -6,19 +6,21 @@
 #   scripts/install.sh --with-node          also download Node.js into ./node (when the system's is too old)
 #   scripts/install.sh --listen 0.0.0.0     reachable from other machines (default: this machine only)
 #   scripts/install.sh --service            install and start the systemd service (asks for sudo)
+#   scripts/install.sh --skip-web           don't build the web app (web/dist was built elsewhere, e.g. by deploy.sh)
 set -eu
 
 NODE_VERSION=24.21.0          # used by --with-node
 MIN_NODE=22.13                # node:sqlite without a flag
 DIR=$(cd "$(dirname "$0")/.." && pwd)
-WITH_NODE=0 SERVICE=0 LISTEN=""
+WITH_NODE=0 SERVICE=0 SKIP_WEB=0 LISTEN=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --with-node) WITH_NODE=1 ;;
     --service) SERVICE=1 ;;
+    --skip-web) SKIP_WEB=1 ;;
     --listen) LISTEN="$2"; shift ;;
-    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (try --help)"; exit 1 ;;
   esac
   shift
@@ -52,8 +54,12 @@ say "Using Node.js $(node -v) ($NODE)"
 # ---- dependencies and the web build
 say "Installing server dependencies"
 (cd "$DIR/server" && npm ci --omit=dev --no-audit --no-fund)
-say "Building the web app"
-(cd "$DIR/web" && npm ci --no-audit --no-fund && npm run build)
+if [ "$SKIP_WEB" = 1 ]; then
+  [ -f "$DIR/web/dist/index.html" ] || { echo "--skip-web, but there's no web/dist: build it first"; exit 1; }
+else
+  say "Building the web app"
+  (cd "$DIR/web" && npm ci --no-audit --no-fund && npm run build)
+fi
 
 # ---- config (never overwritten; holds no secrets, device logins live in the database)
 if [ ! -f "$DIR/server/config.json" ]; then
