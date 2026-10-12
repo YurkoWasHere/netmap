@@ -38,7 +38,7 @@ function pickRoot(devices, results) {
 }
 
 function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} } = {}) {
-  const devices = all(db.prepare(`select d.id, d.name, d.driver, d.host, d.enabled, d.notes, d.x, d.y, d.is_root, d.is_core, d.mac, d.node,
+  const devices = all(db.prepare(`select d.id, d.name, d.driver, d.host, d.enabled, d.notes, d.x, d.y, d.is_root, d.is_core, d.mac, d.node, d.paused_until,
       p.polled_at, p.ok, p.error, p.last_ok_at, p.result
     from devices d left join polls p on p.device_id = d.id order by d.id`));
   const results = {};
@@ -184,6 +184,8 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
       // an unmanaged switch's IP and name, looked up from its MAC
       macIp: d.driver === "none" && d.mac && macInfo[d.mac] ? macInfo[d.mac] : null, mac: d.mac || "", driver: d.driver, enabled: !!d.enabled,
       status: d.driver === "none" ? "unmanaged" : !d.polled_at ? "pending" : d.ok ? "ok" : "error", error: d.error || null, polledAt: d.polled_at, lastOkAt: d.last_ok_at,
+      // polling paused (until pausedUntil); the last data stays, but it isn't live
+      pausedUntil: d.paused_until && d.paused_until > new Date().toISOString() ? d.paused_until : null,
       notes: d.notes, x: d.x, y: d.y, isRoot: d.id === root, rootMarked: !!d.is_root, isCore: isCore.has(d.id), depth: depthOf(d.id),
       // the gateway's WAN, drawn as a link up to the internet
       wan: d.id === root && r ? (r.interfaces || []).filter((i) => /^wan|pppoe|^lte|^wwan/i.test(i.name) && i.up)

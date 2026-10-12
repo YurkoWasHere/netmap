@@ -335,3 +335,13 @@ code { font-family: var(--font-mono); font-size: .9em; }
 .nm-face .wanlbl { fill: #74c0fc; font: 600 5px var(--font-sans); text-anchor: middle; }
 .nm-face .poe { fill: #ffd43b; stroke: #0d0e10; stroke-width: .3; }
 .nm-poe-port { display: block; color: var(--warn); font-family: var(--font-sans); }
+
+/* paused polling */
+.nm-device.is-paused { opacity: .62; }
+.nm-device.is-paused .nm-dev-ico .nm-dot { background: var(--muted); }
+.nm-role.paused { background: var(--panel-2); color: var(--muted); border: 1px dashed var(--line); }
+.nm-devlist button.paused .name { opacity: .7; }
+.nm-paused { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 12px; padding: 7px 10px; border-radius: 8px;
+  background: var(--panel-2); border: 1px dashed var(--line); font-size: .85rem; }
+.nm-pause-pick { display: grid; gap: 3px; font-size: .74rem; color: var(--muted); margin: -4px 0 12px; }
+.nm-pause-pick select { font: inherit; font-size: .88rem; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; }

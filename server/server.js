@@ -7,7 +7,8 @@
 //                                        polled; driver "proxmox" needs node (which cluster node) and a user@pve login
 //   PATCH  /api/devices/:id              change any of the above, or { enabled }, { notes }
 //   DELETE /api/devices/:id
-//   POST   /api/devices/:id/poll         poll now, returns the result or the error
+//   POST   /api/devices/:id/poll         poll now, returns the result or the error (works while paused too)
+//   POST   /api/devices/:id/pause        { minutes } pause polling for that long; -1 until resumed; 0 resumes
 //   PUT    /api/devices/:id/uplink       { device, port } what it's plugged into (a drawn cable); { device: null } = automatic
 //   POST   /api/proxmox/nodes            { host, port?, username, password } -> { cluster, nodes: [{ name, ip, online }] }
 //   POST   /api/setup                    { name, host, port?, https?, root_user?, root_password, device_id? } sets up an OpenWrt
@@ -49,7 +50,7 @@ const WEB = path.resolve(__dirname, "..", "web", "dist");
 const db = open(DB_PATH);
 oui.load(db);
 energy.init(db);
-const PUBLIC_COLS = "id, name, driver, host, port, https, verify_tls, username, enabled, notes, is_root, is_core, mac, node, created_at, (password != '') as has_password";
+const PUBLIC_COLS = "id, name, driver, host, port, https, verify_tls, username, enabled, notes, is_root, is_core, mac, node, paused_until, created_at, (password != '') as has_password";
 const EDITABLE = ["name", "driver", "host", "port", "https", "verify_tls", "username", "password", "enabled", "notes", "is_root", "is_core", "mac", "node"];
 
 // ---------- polling ----------
@@ -101,7 +102,9 @@ async function pollDevice(id) {
 
 // One device's trouble (including being removed mid-round) must never stop the round or the server.
 async function pollAll() {
-  for (const { id } of all(db.prepare("select id from devices where enabled = 1 and driver != 'none'"))) {
+  // paused devices are skipped until their pause runs out
+  const now = new Date().toISOString();
+  for (const { id } of all(db.prepare("select id from devices where enabled = 1 and driver != 'none' and (paused_until is null or paused_until <= ?)"), now)) {
     if (busy.has(id)) continue;
     try { await pollDevice(id); }
     catch (e) { if (!/no such device/.test(e.message)) console.error(`poll of device ${id} failed: ${e.message}`); }
@@ -222,6 +225,13 @@ async function api(req, res, url) {
   if ((r = m(/^\/api\/devices\/(\d+)\/poll$/)) && method === "POST") {
     const p = await pollDevice(Number(r[1]));
     return send(res, 200, { ok: p.ok, error: p.error || null, polledAt: p.polledAt, probes: p.result && p.result.probes });
+  }
+  if ((r = m(/^\/api\/devices\/(\d+)\/pause$/)) && method === "POST") {
+    // { minutes: 60 } pauses polling for that long, { minutes: -1 } until resumed, { minutes: 0 } resumes
+    const minutes = Number((await readBody(req)).minutes) || 0;
+    const until = minutes > 0 ? new Date(Date.now() + minutes * 60000).toISOString() : minutes < 0 ? "9999-12-31T00:00:00.000Z" : null;
+    db.prepare("update devices set paused_until = ? where id = ?").run(until, Number(r[1]));
+    return send(res, 200, { ok: true, paused_until: until });
   }
   if ((r = m(/^\/api\/devices\/(\d+)\/uplink$/)) && method === "PUT") {
     // Say what this device is plugged into (replaces any cable drawn into it); { device: null } = automatic.

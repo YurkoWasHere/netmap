@@ -14,7 +14,7 @@ const DEV_W = 230, CLIENT_W = 185;
 const DeviceNode = memo(function DeviceNode({ data, selected }) {
   const s = data.system || {};
   return (
-    <div className={"nm-node nm-device is-" + data.status + (selected ? " is-selected" : "")}>
+    <div className={"nm-node nm-device is-" + data.status + (data.pausedUntil ? " is-paused" : "") + (selected ? " is-selected" : "")}>
       <Handle type="target" position={Position.Top} />
       <div className="nm-dev-row">
         <div className={"nm-dev-ico " + deviceIcon(data)}>
@@ -26,6 +26,7 @@ const DeviceNode = memo(function DeviceNode({ data, selected }) {
             <strong>{data.name}</strong>
             {data.isRoot && <span className="nm-role gw">Gateway</span>}
             {data.isCore && <span className="nm-role core">Core</span>}
+            {data.pausedUntil && <span className="nm-role paused" title="Polling paused">Paused</span>}
             {data.poe && data.poe.usedW != null && <span className="nm-poe" title={`PoE: ${data.poe.usedW} W of ${data.poe.budgetW} W`}>⚡{data.poe.usedW} W</span>}
           </div>
           <div className="nm-node-sub">{data.status === "unmanaged" ? "Unmanaged switch" : s.model || data.host}</div>
@@ -208,6 +209,7 @@ function buildView(graph, showClients, flipped) {
   const flipRate = (r) => (r ? { down: r.up, up: r.down } : null);
   // Port rate seen from the device above: tx is what flows down to the port, rx what comes up from it.
   const portRate = (devId, iface) => {
+    if (byId[devId] && byId[devId].pausedUntil) return null; // paused: its numbers aren't live
     const p = iface && byId[devId] && (byId[devId].ports || []).find((x) => x.name === iface);
     if (p && (p.txBps != null || p.rxBps != null)) return { down: p.txBps, up: p.rxBps };
     return p && (p.txPps != null || p.rxPps != null) ? { down: p.txPps, up: p.rxPps, pps: true } : null;
@@ -317,6 +319,7 @@ function buildView(graph, showClients, flipped) {
     }
   };
   const wanRate = (d) => {
+    if (d.pausedUntil) return null;
     const dev = (d.wan || []).map((i) => i.device).find(Boolean);
     const p = dev && (d.ports || []).find((x) => x.name === dev);
     return p && (p.rxBps != null || p.txBps != null) ? { down: p.rxBps, up: p.txBps } : null;

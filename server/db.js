@@ -86,6 +86,8 @@ const ADDED_COLUMNS = [
   ["devices", "mac", "text not null default ''"],
   // Proxmox: which cluster node this device is
   ["devices", "node", "text not null default ''"],
+  // polling paused until this time (ISO); null = polled normally. Far future = until resumed.
+  ["devices", "paused_until", "text"],
   // where you've said a client is plugged in (overrides what the switches report); null = automatic
   ["clients", "placed_device", "integer"],
   ["clients", "placed_port", "text not null default ''"]

@@ -64,7 +64,7 @@ export const Faceplate = memo(function Faceplate({ data }) {
   const sockets = [];
   const put = (p, col, row, wide) => {
     const x = 4 + col * cell, y = 6 + row * (box + 7);
-    const cls = speedClass(p), dur = p.carrier ? blink(traffic(p)) : null;
+    const cls = speedClass(p), dur = p.carrier && !data.pausedUntil ? blink(traffic(p)) : null;
     const up = uplink && (p.name === uplink || p.name === String(uplink).replace(/^g/i, "") || `Gi${p.name}` === uplink);
     const w = wide ? box * 1.3 : box;
     sockets.push(

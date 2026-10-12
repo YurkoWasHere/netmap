@@ -20,6 +20,7 @@ export function makeApi(base = "") {
     proxmoxNodes: (d) => req("POST", "/api/proxmox/nodes", d),
     setupStatus: (id) => req("GET", `/api/setup/${id}`),
     pollDevice: (id) => req("POST", `/api/devices/${id}/poll`),
+    pauseDevice: (id, minutes) => req("POST", `/api/devices/${id}/pause`, { minutes }),
     savePositions: (nodes) => req("PUT", "/api/positions", { nodes }),
     resetPositions: () => req("DELETE", "/api/positions"),
     labelClient: (mac, label) => req("PATCH", `/api/clients/${mac}`, { label }),

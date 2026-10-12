@@ -444,6 +444,39 @@ function webUrl(node, device) {
 // PoE class -> the most a powered device may draw at its end of the cable (IEEE 802.3af/at)
 const POE_CLASS_W = { 0: 12.95, 1: 3.84, 2: 6.49, 3: 12.95, 4: 25.5 };
 
+// "until 14:30", "until Tue 09:00", or "until you resume" for a pause
+const pausedText = (iso) => {
+  if (!iso) return "";
+  if (iso.startsWith("9999")) return "until you resume";
+  const d = new Date(iso), soon = d - Date.now() < 20 * 3600000;
+  return "until " + d.toLocaleString(undefined, soon ? { hour: "2-digit", minute: "2-digit" } : { weekday: "short", hour: "2-digit", minute: "2-digit" });
+};
+
+// Pause polling for a while (or until resumed); while paused the device keeps its last data, without traffic.
+function PauseControl({ node, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const set = async (minutes) => { setBusy(true); try { await api.pauseDevice(node.deviceId, minutes); } finally { setBusy(false); onChanged(); } };
+  if (node.pausedUntil) {
+    return (
+      <div className="nm-paused">
+        <span>⏸ Polling paused {pausedText(node.pausedUntil)}</span>
+        <button className="btn sm" disabled={busy} onClick={() => set(0)}>Resume</button>
+      </div>
+    );
+  }
+  return (
+    <label className="nm-pause-pick">Pause polling
+      <select value="" disabled={busy} onChange={(e) => e.target.value && set(Number(e.target.value))}>
+        <option value="">Not paused</option>
+        <option value="15">for 15 minutes</option>
+        <option value="60">for 1 hour</option>
+        <option value="1440">for 1 day</option>
+        <option value="-1">until I resume</option>
+      </select>
+    </label>
+  );
+}
+
 const VIA = { fdb: "from the MAC tables", lldp: "from LLDP", manual: "set by you", role: "core switch, placed under the gateway",
   behind: "behind the unmanaged switch on that port" };
 
@@ -496,6 +529,7 @@ function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices }) {
       </div>
       {node.error && <p className="nm-error">{node.error}</p>}
       <Roles node={node} onChanged={onChanged} />
+      {!unmanaged && <PauseControl node={node} onChanged={onChanged} />}
       <dl className="facts">
         {!unmanaged && <><dt>Host</dt><dd className="mono">{node.host}</dd></>}
         {node.isRoot && node.wan && node.wan.length > 0 && <><dt>WAN</dt><dd className="mono">{node.wan.map((i) => `${i.name}${i.device ? " (" + i.device + ")" : ""} ${i.ipv4.join(", ")}`).join(" · ")}
@@ -629,11 +663,11 @@ function Overview({ devNodes, clientCount, edges, selected, onSelect, onAdd }) {
       <ul className="nm-devlist">
         {devNodes.map((d) => (
           <li key={d.id}>
-            <button className={selected === d.id ? "on" : ""} onClick={() => onSelect(d.id)} title={DEVICE_KIND[deviceIcon(d)]}>
+            <button className={(selected === d.id ? "on" : "") + (d.pausedUntil ? " paused" : "")} onClick={() => onSelect(d.id)} title={DEVICE_KIND[deviceIcon(d)] + (d.pausedUntil ? ` · polling paused ${pausedText(d.pausedUntil)}` : "")}>
               <span className={"nm-dev-ico sm " + deviceIcon(d)}><Icon name={deviceIcon(d)} size={16} /><span className={"nm-dot " + d.status} /></span>
               <span className="txt">
                 <span className="name">{d.name}{d.isRoot && <span className="nm-role gw">Gateway</span>}{d.isCore && <span className="nm-role core">Core</span>}</span>
-                <span className="meta">{d.status === "unmanaged" ? (d.host || "not probed") : d.host}{d.status === "error" ? " · not answering" : ""}</span>
+                <span className="meta">{d.status === "unmanaged" ? (d.host || "not probed") : d.host}{d.pausedUntil ? " · paused" : d.status === "error" ? " · not answering" : ""}</span>
               </span>
               <span className="cnt" title="clients connected directly">{perDevice[d.id] || ""}</span>
             </button>
