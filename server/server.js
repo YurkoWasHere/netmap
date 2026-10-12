@@ -57,8 +57,8 @@ const WEB = path.resolve(__dirname, "..", "web", "dist");
 const db = open(DB_PATH);
 oui.load(db);
 energy.init(db);
-const PUBLIC_COLS = "id, name, driver, host, port, https, verify_tls, username, enabled, notes, is_root, is_core, mac, node, paused_until, created_at, (password != '') as has_password";
-const EDITABLE = ["name", "driver", "host", "port", "https", "verify_tls", "username", "password", "enabled", "notes", "is_root", "is_core", "mac", "node"];
+const PUBLIC_COLS = "id, name, driver, host, port, https, verify_tls, username, enabled, notes, is_root, is_core, mac, node, wan_port, paused_until, created_at, (password != '') as has_password";
+const EDITABLE = ["name", "driver", "host", "port", "https", "verify_tls", "username", "password", "enabled", "notes", "is_root", "is_core", "mac", "node", "wan_port"];
 
 // ---------- polling ----------
 const busy = new Set();
@@ -192,7 +192,7 @@ function cleanDevice(b, partial, existingDriver) {
   for (const k of EDITABLE) if (b[k] !== undefined) out[k] = b[k];
   for (const k of ["https", "verify_tls", "enabled", "is_root", "is_core"]) if (k in out) out[k] = out[k] ? 1 : 0;
   if ("port" in out) out.port = out.port ? Number(out.port) : null;
-  for (const k of ["name", "host", "username", "notes", "driver", "node"]) if (k in out) out[k] = String(out[k]).trim();
+  for (const k of ["name", "host", "username", "notes", "driver", "node", "wan_port"]) if (k in out) out[k] = String(out[k] ?? "").trim();
   if ((out.driver || existingDriver) === "proxmox") {
     if (out.username) out.username = drivers.proxmox.realmUser(out.username);
     if (out.username && /@pam$/i.test(out.username)) throw new Error("use a PVE-realm account (user@pve), not a PAM one");

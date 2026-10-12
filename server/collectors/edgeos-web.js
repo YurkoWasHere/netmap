@@ -39,13 +39,16 @@ async function login(col) {
   return s;
 }
 
+// view: a data.json view (dhcp_leases, ...), or null for the configuration (get.json)
 async function data(col, view) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const s = sessions.get(col.id) || (await login(col));
-    const r = await request(col, "GET", `/api/edge/data.json?data=${view}`, { cookie: s.cookie });
+    const r = await request(col, "GET", view ? `/api/edge/data.json?data=${view}` : "/api/edge/get.json", { cookie: s.cookie });
     let j = null;
-    try { j = JSON.parse(r.body); } catch { /* login page: the session is gone */ }
+    // the config's JSON can carry raw control characters (EdgeOS doesn't escape them); a login page isn't JSON at all
+    try { j = JSON.parse(r.body); } catch { try { j = JSON.parse(r.body.replace(/[\u0000-\u001f]/g, " ")); } catch { /* the session is gone */ } }
     if (!j) { sessions.delete(col.id); continue; }
+    if (!view) { if (!j.GET) throw new Error("config: refused"); return j.GET; }
     if (j.success !== "1") throw new Error(j.error || `${view}: refused`);
     return j.output;
   }
@@ -66,11 +69,28 @@ async function collect(col) {
     }
   }
   out.probes.leases = "ok";
+  // the config (readable with the operator login): which jack each PPPoE session and VLAN sits on, so the WAN
+  // (pppoe0 on eth5.35) gets its physical port. Only that layout is kept; the rest (it includes secrets such as
+  // the PPPoE password) is dropped right here, never stored or logged.
+  try {
+    const cfg = await data(col, null);
+    const eth = (((cfg || {}).interfaces || {}).ethernet) || {};
+    out.ifaceJacks = {};
+    for (const [jack, e] of Object.entries(eth)) {
+      for (const n of Object.keys(e.pppoe || {})) out.ifaceJacks[`pppoe${n}`] = jack;
+      for (const [vid, v] of Object.entries(e.vif || {})) {
+        out.ifaceJacks[`${jack}.${vid}`] = jack;
+        for (const n of Object.keys((v && v.pppoe) || {})) out.ifaceJacks[`pppoe${n}`] = jack;
+      }
+    }
+    out.probes.config = "ok";
+  } catch (e) { out.probes.config = e.message; }
   return out;
 }
 
 module.exports = {
   label: "EdgeOS web UI (DHCP names)",
-  probes: { leases: ["DHCP leases (client names)", "a web login on the router; read-only (operator level) is enough"] },
+  probes: { leases: ["DHCP leases (client names)", "a web login on the router; read-only (operator level) is enough"],
+    config: ["Interface layout (which jack the WAN is on)", "the same login (reads the configuration, never changes it)"] },
   collect
 };

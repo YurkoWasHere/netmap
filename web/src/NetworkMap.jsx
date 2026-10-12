@@ -326,7 +326,7 @@ function buildView(graph, showClients, flipped) {
   };
   const wanRate = (d) => {
     if (d.pausedUntil) return null;
-    const dev = (d.wan || []).map((i) => i.device).find(Boolean);
+    const dev = (d.wan || []).map((i) => i.port).find(Boolean) || (d.wan || []).map((i) => i.device).find(Boolean);
     const p = dev && (d.ports || []).find((x) => x.name === dev);
     return p && (p.rxBps != null || p.txBps != null) ? { down: p.rxBps, up: p.txBps } : null;
   };
@@ -339,7 +339,7 @@ function buildView(graph, showClients, flipped) {
       const wan = d.wan || [];
       const ips = wan.flatMap((i) => i.ipv4.map((a) => a.split("/")[0]));
       nodes.push({ id: "inet|" + d.id, type: "internet", deletable: false, position: { x: at.x + DEV_W / 2 - INET_W / 2, y: at.y - INET_DY }, data: { ips, upstream: d.upstream || [] }, style: { width: INET_W } });
-      edges.push({ id: "wan|" + d.id, source: "inet|" + d.id, target: d.id, label: wan.map((i) => (i.device && i.device !== i.name ? `${i.name} (${i.device})` : i.name)).join(" · ") || "WAN",
+      edges.push({ id: "wan|" + d.id, source: "inet|" + d.id, target: d.id, label: wan.map((i) => { const under = i.port || (i.device !== i.name ? i.device : ""); return under ? `${i.name} (${under})` : i.name; }).join(" · ") || "WAN",
         className: "nm-edge wan", deletable: false, data: { rate: wanRate(d) }, labelBgPadding: [4, 2], labelBgBorderRadius: 3 });
     }
     left += width(d.id) + GAP * 2;

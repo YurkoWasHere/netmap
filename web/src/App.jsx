@@ -64,7 +64,8 @@ const COLLECTORS = {
     label: "EdgeOS web UI (DHCP names)",
     hint: "Logs in to the EdgeRouter's web page for its DHCP leases, to name clients that SNMP's ARP table only shows by IP. A read-only (operator) login is enough: set system login user netmap level operator.",
     defaults: { https: true, username: "netmap" },
-    probes: { leases: ["DHCP leases (client names)", "a web login on the router; read-only (operator level) is enough"] }
+    probes: { leases: ["DHCP leases (client names)", "a web login on the router; read-only (operator level) is enough"],
+      config: ["Interface layout (which jack the WAN is on)", "the same login (reads the configuration, never changes it)"] }
   },
   "edgeos-ssh": {
     label: "EdgeOS MAC table (SSH key)",
@@ -664,6 +665,22 @@ function pluggedText(node, nameOf, unmanaged, device) {
 
 const physicalPorts = (node) => node.ports.filter((p) => p.type !== "bridge" && !/^(lo|ifb|gre|teql|sit|ip6tnl|erspan)/.test(p.name));
 
+// The gateway's WAN jack, for routers where netmap can't tell (SNMP sees pppoe0, not that it runs on eth5).
+function WanPortPick({ node, device, ports, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const set = (device && device.wan_port) || "";
+  const detected = !set && node.wanPort;
+  return (
+    <label className="nm-role-pick">WAN port
+      <select value={set} disabled={busy} onChange={async (e) => { setBusy(true); try { await api.updateDevice(node.deviceId, { wan_port: e.target.value }); } finally { setBusy(false); onChanged(); } }}>
+        <option value="">{detected ? `Automatic (${detected})` : "Automatic"}</option>
+        {ports.map((p) => <option key={p.name} value={p.name}>{p.name}{p.alias ? ` · ${p.alias}` : ""}</option>)}
+      </select>
+      <span className="hint">The jack the internet comes in on: marked WAN on the faceplate, its traffic drawn on the internet link, and what's seen on it goes in the Internet cloud instead of the client list.</span>
+    </label>
+  );
+}
+
 const DRIVER_NAME = { openwrt: "OpenWrt", snmp: "SNMP", tplink: "TP-Link web", dlink: "D-Link web", proxmox: "Proxmox API" };
 
 function NameForm({ name, onSave }) {
@@ -825,6 +842,7 @@ function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices, clie
 
           <h3>On the map</h3>
           <Roles node={node} onChanged={onChanged} />
+          {node.isRoot && ports.length > 0 && <WanPortPick node={node} device={device} ports={ports} onChanged={onChanged} />}
           {!node.isRoot && <PluggedIntoEditor devices={devices.filter((d) => d.id !== node.id)} device={drawn ? Number(node.parent.slice(1)) : null} port={drawn ? node.parentPort : ""}
             autoLabel={unmanaged ? "Nothing" : "Automatic (from the switches)"}
             onSave={async (dev, port) => { await api.setUplink(node.deviceId, dev, port); onChanged(); }} />}

@@ -83,7 +83,8 @@ export const Faceplate = memo(function Faceplate({ data }) {
   copper.forEach((p, i) => (rows === 2 ? put(p, Math.floor(i / 2), i % 2, false) : put(p, i, 0, false)));
   const start = Math.ceil(copper.length / rows) + 0.6;
   sfp.forEach((p, i) => (rows === 2 ? put(p, start + Math.floor(i / 2) * 1.4, i % 2, true) : put(p, start + i * 1.4, 0, true)));
-  const wan = data.driver === "openwrt" ? ports.findIndex((p) => /^wan/.test(p.name)) : -1;
+  // the WAN jack: OpenWrt's "wan" port, or the gateway's WAN port (Settings, or from the device's config)
+  const wan = data.wanPort ? ports.findIndex((p) => p.name === data.wanPort) : data.driver === "openwrt" ? ports.findIndex((p) => /^wan/.test(p.name)) : -1;
 
   const totalW = watts ? ports.reduce((a, p) => a + ((p.poe && p.poe.mW) || 0), 0) / 1000 : null;
   return (

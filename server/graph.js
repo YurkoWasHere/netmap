@@ -200,8 +200,10 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
       pausedUntil: d.paused_until && d.paused_until > new Date().toISOString() ? d.paused_until : null,
       notes: d.notes, x: d.x, y: d.y, isRoot: d.id === root, rootMarked: !!d.is_root, isCore: isCore.has(d.id), depth: depthOf(d.id),
       // the gateway's WAN, drawn as a link up to the internet
+      // port: the physical jack under it, from you (Settings → WAN port) or the device (e.g. EdgeOS's config)
       wan: d.id === root && r ? (r.interfaces || []).filter((i) => /^wan|pppoe|^lte|^wwan/i.test(i.name) && i.up)
-        .map((i) => ({ name: i.name, device: i.device, ipv4: i.ipv4, proto: i.proto })) : [],
+        .map((i) => ({ name: i.name, device: i.device, ipv4: i.ipv4, proto: i.proto, port: d.wan_port || i.port || null })) : [],
+      wanPort: d.wan_port || null,
       parent: p ? "d" + p.x : null, parentPort: p ? p.xPort : null, uplinkPort: p ? p.yPort : uplink[d.id] || null, parentVia: p ? p.via : null,
       parentSeenAt: p && p.seenAt ? p.seenAt : null, parentSeenVia: p && p.seenVia ? p.seenVia : null,
       // the device's own name for its uplink port (where it sees the gateway), for drawing it on its faceplate
@@ -253,7 +255,8 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
   const rootNode = nodes.find((n) => n.isRoot);
   // a client you placed by hand still needs to be seen somewhere, but ARP is enough for it
   const placedOk = (c) => c.placed_device && devices.some((d) => d.id === c.placed_device);
-  const wanIfaces = new Set(rootNode ? rootNode.wan.flatMap((i) => [i.device, i.name]).filter(Boolean) : []);
+  const wanIfaces = new Set(rootNode ? rootNode.wan.flatMap((i) => [i.device, i.name, i.port]).concat(rootNode.wanPort).filter(Boolean) : []);
+  if (rootNode && !rootNode.wanPort) rootNode.wanPort = (rootNode.wan.find((i) => i.port) || {}).port || null;
   if (rootNode) rootNode.upstream = [];
   for (const c of clients) {
     if (byMac[c.mac]) continue;

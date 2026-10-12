@@ -21,6 +21,8 @@ function merge(r, kind, got) {
       r.names[mac] = { hostname: cur.hostname || n.hostname || "", ip: cur.ip || n.ip || "" };
     }
   }
+  // which physical jack an interface rides on (pppoe0 -> eth5): marks the WAN's port
+  if (got.ifaceJacks) for (const i of r.interfaces || []) if (got.ifaceJacks[i.name] && !i.port) i.port = got.ifaceJacks[i.name];
   // clients (a MAC table): replace the driver's sighting of the same MAC the same way, never the device's own MACs
   if (got.clients) {
     const own = new Set(r.ownMacs || []);
