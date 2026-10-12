@@ -172,7 +172,12 @@ function parseSwconfig(text, out) {
   for (const block of String(text).split(/^== switch /m).slice(1)) {
     const sw = block.split("\n")[0].trim();
     const ports = {}, vlans = [];
-    const sections = block.split(/^(?=(?:Port|VLAN) \d+:)/m);
+    // The chip's MAC table (arl_table, on chips that have one) lists "Port N: MAC aa:bb:..": which jack each
+    // wired MAC is on, which Linux's bridge can't tell (all jacks share one eth0.N). Taken out before the
+    // per-port sections are split, since its lines start with "Port N:" too.
+    const arl = [];
+    const body = block.replace(/^Port (\d+): MAC ([0-9a-f:]{17})\s*$/gim, (_, n, mac) => { arl.push({ n: Number(n), mac: normMac(mac) }); return ""; });
+    const sections = body.split(/^(?=(?:Port|VLAN) \d+:)/m);
     for (const sec of sections) {
       let m = sec.match(/^Port (\d+):/);
       if (m) {
@@ -202,6 +207,12 @@ function parseSwconfig(text, out) {
         speed: p.speed >= 1000 ? `${p.speed / 1000}G` : p.speed ? `${p.speed}M` : "", mac: "", bridge: null, members: [],
         alias: `${sw} port ${p.n}${untaggedIn(p.n).length ? ", VLAN " + untaggedIn(p.n).join("/") : ""}`, rxBytes: p.rx, txBytes: p.tx
       });
+      // wired clients the bridge saw on the switch's eth0.N: put them on this jack instead
+      for (const a of arl.filter((x) => x.n === p.n)) {
+        for (const c of out.clients) {
+          if (c.via === "fdb" && c.mac === a.mac) { c.detail = { ...(c.detail || {}), bridgePort: c.iface, switchPort: p.n }; c.iface = isWan ? "wan" : `lan${lan}`; }
+        }
+      }
     }
   }
 }
