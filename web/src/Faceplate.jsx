@@ -58,12 +58,14 @@ export const Faceplate = memo(function Faceplate({ data }) {
   const rows = copper.length > 12 ? 2 : 1;
   const cols = Math.ceil(copper.length / rows) + (sfp.length ? Math.ceil(sfp.length / rows) * 1.4 + 0.6 : 0);
   const cell = Math.min(16, Math.floor(W / Math.max(cols, 1)));
-  const box = Math.max(6, cell - 3), h = rows * (box + 7) + 6;
+  const watts = ports.some((p) => p.poe && p.poe.mW != null); // per-port PoE watts (e.g. from the Netgear web UI)
+  const pitch = Math.max(6, cell - 3) + 7;
+  const box = Math.max(6, cell - 3), h = rows * pitch + 6;
   const uplink = data.localUplink || data.uplinkPort;
 
   const sockets = [];
   const put = (p, col, row, wide) => {
-    const x = 4 + col * cell, y = 6 + row * (box + 7);
+    const x = 4 + col * cell, y = 6 + row * pitch;
     const cls = speedClass(p), dur = p.carrier && !data.pausedUntil ? blink(traffic(p)) : null;
     const up = uplink && (p.name === uplink || p.name === String(uplink).replace(/^g/i, "") || `Gi${p.name}` === uplink);
     const w = wide ? box * 1.3 : box;
@@ -83,8 +85,9 @@ export const Faceplate = memo(function Faceplate({ data }) {
   sfp.forEach((p, i) => (rows === 2 ? put(p, start + Math.floor(i / 2) * 1.4, i % 2, true) : put(p, start + i * 1.4, 0, true)));
   const wan = data.driver === "openwrt" ? ports.findIndex((p) => /^wan/.test(p.name)) : -1;
 
+  const totalW = watts ? ports.reduce((a, p) => a + ((p.poe && p.poe.mW) || 0), 0) / 1000 : null;
   return (
-    <div className="nm-face" title={`${ports.length} ports · ${ports.filter((p) => p.carrier).length} linked`}>
+    <div className="nm-face" title={`${ports.length} ports · ${ports.filter((p) => p.carrier).length} linked${watts ? ` · PoE ${totalW.toFixed(1)} W` : ""}`}>
       <svg width="100%" viewBox={`0 0 ${W} ${h + (wan >= 0 ? 7 : 0)}`} preserveAspectRatio="xMinYMid meet" aria-hidden="true">
         {sockets}
         {wan >= 0 && <text x={4 + wan * cell + box / 2} y={h + 5} className="wanlbl">WAN</text>}

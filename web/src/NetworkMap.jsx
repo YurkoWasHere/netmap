@@ -164,6 +164,7 @@ const PortNode = memo(function PortNode({ data }) {
       {data.wifi && <Icon name="ap" size={12} className="wifi-ico" />}
       <span className="lbl">{data.label}</span>
       <span className="cnt">{data.collapsed ? `+${data.count}` : data.count}</span>
+      {data.watts != null && <span className="watts" title="PoE power this port is delivering">⚡{data.watts.toFixed(1)} W</span>}
       {data.rate && (data.rate.down != null || data.rate.up != null) && (
         data.rate.pps
           ? <span className="rate" title="packets per second on this port (this switch only counts packets), averaged over the last poll">↓{fmtPkts(data.rate.down) || "0"} ↑{fmtPkts(data.rate.up) || "0"} p/s</span>
@@ -213,6 +214,11 @@ function buildView(graph, showClients, flipped) {
     const p = iface && byId[devId] && (byId[devId].ports || []).find((x) => x.name === iface);
     if (p && (p.txBps != null || p.rxBps != null)) return { down: p.txBps, up: p.rxBps };
     return p && (p.txPps != null || p.rxPps != null) ? { down: p.txPps, up: p.rxPps, pps: true } : null;
+  };
+  // PoE power the device is putting out on a port, in watts (switches that report it per port), else null
+  const portWatts = (devId, iface) => {
+    const p = iface && byId[devId] && (byId[devId].ports || []).find((x) => x.name === iface);
+    return p && p.poe && p.poe.status === "delivering" && p.poe.mW != null ? p.poe.mW / 1000 : null;
   };
   for (const n of graph.nodes) {
     if (n.kind !== "client") continue;
@@ -295,7 +301,7 @@ function buildView(graph, showClients, flipped) {
       const single = g.clients.length + g.children.length === 1 ? grate : null;
       if (!g.hidden) {
         nodes.push({ id: g.id, type: "port", deletable: false, position: { x: portCenter - PORT_W / 2, y: top + PORT_DY + (hasCore ? 0 : drop) },
-          data: { label: g.label, count: g.clients.length, collapsed: g.collapsed, wifi: g.wifi, devices: g.children.length, rate: grate }, style: { width: PORT_W } });
+          data: { label: g.label, count: g.clients.length, collapsed: g.collapsed, wifi: g.wifi, devices: g.children.length, rate: grate, watts: portWatts(d.id, g.iface) }, style: { width: PORT_W } });
         edges.push({ id: "dp" + g.id, source: d.id, target: g.id, className: "nm-edge port-link kind-" + g.kind + (g.children.length ? " trunk" : ""), deletable: false, data: { rate: grate } });
       }
       g.columns.forEach((col, ci) => col.forEach((c, ri) => {

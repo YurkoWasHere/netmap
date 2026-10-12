@@ -162,6 +162,8 @@ code { font-family: var(--font-mono); font-size: .9em; }
 .nm-port { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2); font: 500 11px/1.4 var(--font-mono); color: var(--fg); cursor: pointer; }
 .nm-port .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nm-port .cnt { color: var(--muted); }
+.nm-port .watts { color: #b8860b; font-weight: 600; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .nm-port .watts { color: #ffd43b; } }
 .nm-port.wifi { border-color: var(--wifi); }
 .nm-port.collapsed { background: var(--panel); border-style: dashed; }
 .nm-port:hover { border-color: var(--accent); }
