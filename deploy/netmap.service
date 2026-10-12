@@ -1,0 +1,29 @@
+# netmap: polls the network devices in its database and serves the map.
+# scripts/install.sh --service fills in the paths and user and installs this; to do it by hand, replace
+# @USER@ and @DIR@ (the netmap folder), then:
+#   sudo cp netmap.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now netmap
+# Logs: journalctl -u netmap -f
+[Unit]
+Description=netmap network map
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@DIR@/server
+ExecStart=@NODE@ server.js
+Restart=on-failure
+RestartSec=5
+
+# Read-only everywhere except its own folder (the database lives there).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=@DIR@/server
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

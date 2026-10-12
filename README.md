@@ -1,31 +1,67 @@
 # netmap
 
-A live network map. Add devices to a SQLite database; the server polls them and the web app draws
-routers, APs, switches and their clients with React Flow.
+A live map of your network. Add devices to a SQLite database; the server polls them every minute and the web
+app draws the internet gateway, switches, routers, access points, hypervisors and every client on them as a
+tree, with live traffic, front-panel views of each device, and PoE power.
 
-Standalone on purpose: it doesn't depend on the closet site, so you can copy this folder to another
-network. Supported so far: **OpenWrt** routers and APs (ubus), **SNMP v2c** devices such as managed switches,
-**Proxmox VE** nodes (API), and **unmanaged switches** (drawn, never polled). Drivers live in `server/drivers/`.
+Supported devices:
 
-## Run it
+| Device | How it's read | What you get |
+|---|---|---|
+| **OpenWrt** routers and APs | ubus JSON-RPC with a read-only login (netmap can set it up for you) | interfaces, Wi-Fi clients, bridge MAC table, switch-chip jacks (swconfig), LLDP, DHCP names, ARP |
+| **SNMP v2c** managed switches | IF-MIB, Q-BRIDGE / BRIDGE-MIB, LLDP-MIB, IP-MIB, POWER-ETHERNET-MIB | ports, speeds, traffic, MAC table, neighbours, PoE total and per-port class |
+| **TP-Link Easy Smart** switches (TL-SG105E/108E/116E …) | their web pages | ports, speeds, packet counters (MAC table only with patched firmware, see below) |
+| **Proxmox VE** nodes | the API, with a read-only `user@pve` account | VMs and containers, their NICs and bridges |
+| **Netgear smart switches** (S350 …) | web UI, as an extra data source next to SNMP | per-port PoE watts, volts, mA and class |
+| **Unmanaged switches** | never polled | drawn where you say, or where their MAC is seen |
 
-Needs Node 22.13 or newer (it uses the built-in `node:sqlite`, so there are no native modules to build).
-Run `npm install` in `server/` once (SSH client for automatic setup, and the SNMP library).
+Drivers live in `server/drivers/`, extra data sources (collectors) in `server/collectors/`.
+
+## Install
+
+Needs Linux (or macOS) with **Node.js 22.13 or newer** (it uses the built-in `node:sqlite`, so there are no
+native modules to compile). If your distribution's Node is older, the installer can fetch a private copy.
 
 ```sh
-cd web && npm install && npm run build      # first time, and after UI changes
-cd ../server && npm install && cp config.example.json config.json && npm start
+git clone https://github.com/YurkoWasHere/netmap.git && cd netmap
+scripts/install.sh                         # dependencies, web build, server/config.json
+cd server && node server.js                # then open http://localhost:8090
 ```
 
-Open http://localhost:8090. To reach it from other machines, set `"host": "0.0.0.0"` in `server/config.json`.
+Options for `scripts/install.sh` (it's safe to run again after a `git pull`):
 
-Front-end work: `npm start` in `server/` plus `npm run dev` in `web/` (Vite forwards `/api` to port 8090).
+- `--with-node`: download Node.js into `./node` (checksum-verified) and use that.
+- `--listen 0.0.0.0`: let other machines on your network open the map (default: this machine only).
+- `--service`: install and start a systemd service that runs as your user (asks for sudo). Logs:
+  `journalctl -u netmap -f`. Template: `deploy/netmap.service`.
 
-### Trying it without hardware
+A typical always-on install on a small Linux box: `scripts/install.sh --with-node --listen 0.0.0.0 --service`.
 
-`npm run mock` in `server/` starts fake OpenWrt devices on `127.0.0.1`: a router on port 8181 and an AP on
-8182 (already set up: user `monitor`, password `monitor`), and a fresh AP on 8183 that only has
-`root` / `root`, for trying automatic setup.
+Settings are in `server/config.json` (copied from `server/config.example.json`): `host`, `port` (8090),
+`db` (the database file), `pollSeconds` (60) and `clientMaxAgeMinutes` (how long a client stays on the map after
+it was last seen). `HOST`, `PORT`, `POLL_SECONDS`, `NETMAP_DB` and `NETMAP_CONFIG` environment variables override them.
+
+To update: `git pull && scripts/install.sh`, then restart the server (`sudo systemctl restart netmap`).
+
+### Security
+
+- **The web app and API have no login.** Anyone who can open the page can add, change and remove devices. Keep it
+  on `127.0.0.1` (the default) or a network you trust, or put it behind a reverse proxy with authentication.
+- Device logins (read-only accounts, SNMP communities) are stored in plain text in the database
+  (`server/netmap.db`), because the poller needs them. The API never returns them. Keep the file private and
+  out of git (it's in `.gitignore`), and give netmap read-only accounts wherever the device allows it.
+- Admin passwords used for automatic OpenWrt setup are used once and never stored.
+- netmap only reads. The only things it sends to a device's web UI are logins (and, for the Netgear collector,
+  a logout of its own session).
+
+### Development
+
+`npm start` in `server/` plus `npm run dev` in `web/` (Vite forwards `/api` to port 8090). From the top folder:
+`npm start`, `npm run dev`, `npm run build`.
+
+**Trying it without hardware:** `npm run mock` in `server/` starts fake OpenWrt devices on `127.0.0.1`: a router
+on port 8181 and an AP on 8182 (already set up: user `monitor`, password `monitor`), and a fresh AP on 8183 that
+only has `root` / `root`, for trying automatic setup.
 
 ## Adding an OpenWrt device
 
@@ -49,8 +85,8 @@ the web pages: system info, link and speed per port, and packet counters (these 
 netmap never logs out, because Logout.htm ends every session on the switch, yours in a browser included.
 
 Stock firmware has **no MAC address table**, so clients behind such a switch are placed by the "behind it" rule.
-Some switches here run a **custom, patched firmware** that adds `MacTableRpm.htm` and `/MacTableNN.dat` blocks;
-that is not a TP-Link feature: see [TL-SG108E-V5-custom-firmware](https://github.com/YurkoWasHere/TL-SG108E-V5-custom-firmware) (TL-SG108E v5 only). The driver checks for it on every poll and only then reads the table (front
+Switches running a **custom, patched firmware** get `MacTableRpm.htm` and `/MacTableNN.dat` blocks;
+(not a TP-Link feature): see [TL-SG108E-V5-custom-firmware](https://github.com/YurkoWasHere/TL-SG108E-V5-custom-firmware) (TL-SG108E v5 only). The driver checks for it on every poll and only then reads the table (front
 socket = ASIC port + 1, checked on a TL-SG108E v5); on any other switch it carries on without it.
 
 ## Adding a Proxmox VE node
@@ -106,13 +142,43 @@ devices can also be put on it by hand: **Plugged into** in their panel.
 - The layout is always automatic; nothing on the map can be dragged. To say where something is plugged in,
   use **Plugged into** in its panel (devices and clients); that beats what the switches report.
 
+## Extra data sources (collectors)
+
+A device has one driver and can have extra data sources for things its driver can't read. In the device's
+**Details** tab, **Extra data sources → Add**:
+
+- **Netgear web UI (PoE per port)**: for Netgear smart switches (S350 series and others with the same web UI)
+  whose SNMP has no POWER-ETHERNET-MIB. Logs in to the web page with the admin user and reads the PoE port and
+  PoE unit pages: watts, volts, mA and class per port, and the total. netmap keeps one web session open between
+  polls (the switch has only a few), so you may see it in the switch's session list.
+
+Collectors run after the driver on every poll; what they find shows up like the driver's own data.
+
+## PoE energy
+
+On PoE switches (POWER-ETHERNET-MIB, or a collector) netmap samples the power delivered every poll and adds it
+up per day: the device panel shows now, today, the last 7 days and the total. It's the power delivered to
+powered devices, not the switch's own use. Ports that report watts show them on the map (⚡ on the port tag).
+
+## Other things in the device panel
+
+- **Open web page**: the device's own web interface.
+- **Pause polling** for 15 minutes to a day, or until resumed (e.g. while you're logged in to a switch that
+  allows one web session).
+- **Plugged into**: say where a device or client is cabled when the switches can't tell.
+- **Update on the device** (OpenWrt): re-run the setup to install netmap's newest read-only helpers.
+
 ## Files
 
 - `server/server.js`: HTTP API, static files and the poll loop. The API is listed at the top of the file.
-- `server/db.js`: the SQLite schema (devices, polls, clients, sightings, names, links, oui).
-- `server/drivers/openwrt.js`, `snmp.js`, `proxmox.js`: the pollers. Each driver returns the same normalised shape.
-- `server/setup.js`: automatic setup with the root login, over SSH (`ssh2`) or ubus.
+- `server/db.js`: the SQLite schema (devices, collectors, polls, clients, sightings, names, links, uplinks, oui).
+- `server/drivers/`: `openwrt.js`, `snmp.js`, `tplink.js`, `proxmox.js`. Each returns the same normalised shape.
+- `server/collectors/`: extra data sources (`netgear-web.js`); `index.js` merges their results.
+- `server/setup.js`: automatic OpenWrt setup with the root login, over SSH (`ssh2`) or ubus.
 - `server/graph.js`: turns stored polls into map nodes and edges.
-- `server/oui.js`: MAC manufacturer lookup.
+- `server/rates.js`, `server/energy.js`, `server/oui.js`: traffic rates, PoE energy, MAC manufacturer lookup.
+- `server/dev/mock-openwrt.js`: fake OpenWrt devices for development.
 - `web/src/NetworkMap.jsx`: the React Flow map component, usable on its own with `makeApi(baseUrl)`.
-- `web/src/App.jsx`: the page around it: device list, add/edit form, details panel.
+- `web/src/App.jsx`, `Faceplate.jsx`: the page around it (device list, forms, details panel) and device front panels.
+- `docs/openwrt-setup.sh` / `.md`: what an OpenWrt device needs, and the script that sets it up.
+- `scripts/install.sh`, `deploy/netmap.service`: installer and systemd unit.

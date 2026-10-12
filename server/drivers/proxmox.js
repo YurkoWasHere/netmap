@@ -75,7 +75,7 @@ async function session(dev) {
 }
 
 // "virtio=BC:24:11:69:BD:5E,bridge=vmbr0,tag=500,firewall=1" (VM) or
-// "name=eth0,bridge=vmbr0,hwaddr=BC:24:11:69:BD:5E,ip=192.168.42.238/24,type=veth" (container)
+// "name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:00:01,ip=192.168.1.38/24,type=veth" (container)
 function parseNic(s) {
   const kv = Object.fromEntries(String(s).split(",").map((p) => { const i = p.indexOf("="); return i < 0 ? [p, ""] : [p.slice(0, i), p.slice(i + 1)]; }));
   const model = Object.keys(kv).find((k) => /^(virtio|e1000e?|rtl8139|vmxnet3|ne2k_pci|pcnet|i82551|i82557b|i82559er|ne2k_isa)$/.test(k));

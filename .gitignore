@@ -1,8 +1,15 @@
-# secrets and local state: device logins live in the database, SNMP/API settings in config.json
+# secrets and local state: device logins live in the database; config.json is per install
 server/netmap.db*
 server/*.db
 server/*.db-*
 server/config.json
-# dependencies and build output
+server/*.tmp
+# dependencies, the private Node.js copy from install.sh --with-node, build output
 node_modules/
+/node/
 web/dist/
+# editors and OS
+.DS_Store
+*.swp
+.vscode/
+.idea/
