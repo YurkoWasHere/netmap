@@ -34,7 +34,7 @@ export const Icon = memo(function Icon({ name, size = 18, className }) {
 export function deviceIcon(d) {
   if (d.driver === "proxmox") return "server";
   if (d.driver === "none") return "switch-plain";
-  if (d.driver === "snmp" || d.driver === "tplink" || d.driver === "dlink") return "switch";
+  if (d.driver === "snmp" || d.driver === "tplink" || d.driver === "dlink" || d.driver === "realtek") return "switch";
   // OpenWrt: the gateway and anything with a WAN is a router; a box that only serves Wi-Fi is an access point
   if (d.isRoot || (d.wan && d.wan.length)) return "router";
   if ((d.wifi || []).length && !(d.interfaces || []).some((i) => /^wan/.test(i.name) && i.up)) return "ap";

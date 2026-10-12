@@ -12,6 +12,7 @@ Supported devices:
 | **SNMP v2c** managed switches | IF-MIB, Q-BRIDGE / BRIDGE-MIB, LLDP-MIB, IP-MIB, POWER-ETHERNET-MIB | ports, speeds, traffic, MAC table, neighbours, PoE total and per-port class |
 | **TP-Link Easy Smart** switches (TL-SG105E/108E/116E …) | their web pages | ports, speeds, packet counters (MAC table only with patched firmware, see below) |
 | **D-Link Easy Smart** switches (DGS-1100 series) | their web pages (admin password; no SNMP on these) | ports, speeds, packet counters, MAC table, PoE total and per-port watts/volts/mA/class |
+| **2.5G web-managed switches** (SL-SWTGW218AS and the same Realtek firmware as Sodola, Keeplink, Horaco …) | their web pages (admin login; no SNMP) | ports, speeds (2.5G/10G), packet counters, MAC table |
 | **Proxmox VE** nodes | the API, with a read-only `user@pve` account | VMs and containers, their NICs and bridges |
 | **Netgear smart switches** (S350 …) | web UI, as an extra data source next to SNMP | per-port PoE watts, volts, mA and class |
 | **Ubiquiti EdgeRouter** (EdgeOS) | SNMP, plus its web UI (read-only) and a locked-down SSH key as extra data sources | ports, traffic, ARP; DHCP client names; MAC table per jack ([setup](docs/edgeos-setup.md)) |
@@ -177,7 +178,7 @@ powered devices, not the switch's own use. Ports that report watts show them on 
 
 - `server/server.js`: HTTP API, static files and the poll loop. The API is listed at the top of the file.
 - `server/db.js`: the SQLite schema (devices, collectors, polls, clients, sightings, names, links, uplinks, oui).
-- `server/drivers/`: `openwrt.js`, `snmp.js`, `tplink.js`, `dlink.js`, `proxmox.js`. Each returns the same normalised shape.
+- `server/drivers/`: `openwrt.js`, `snmp.js`, `tplink.js`, `dlink.js`, `realtek.js`, `proxmox.js`. Each returns the same normalised shape.
 - `server/collectors/`: extra data sources (`netgear-web.js`, `edgeos-web.js`, `edgeos-ssh.js`); `index.js` merges their results.
 - `server/setup.js`: automatic OpenWrt setup with the root login, over SSH (`ssh2`) or ubus.
 - `server/graph.js`: turns stored polls into map nodes and edges.

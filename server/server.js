@@ -35,7 +35,8 @@ const path = require("path");
 const { open, all, plain } = require("./db.js");
 const { build } = require("./graph.js");
 const drivers = { openwrt: require("./drivers/openwrt.js"), snmp: require("./drivers/snmp.js"), proxmox: require("./drivers/proxmox.js"),
-  tplink: require("./drivers/tplink.js"), dlink: require("./drivers/dlink.js") };
+  tplink: require("./drivers/tplink.js"), dlink: require("./drivers/dlink.js"),
+  realtek: require("./drivers/realtek.js") };
 // Devices nobody can ask anything (a dumb switch): on the map, never polled.
 const UNMANAGED = "none";
 const setup = require("./setup.js");
