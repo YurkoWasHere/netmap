@@ -10,7 +10,8 @@
 //   POST   /api/devices/:id/poll         poll now, returns the result or the error
 //   PUT    /api/devices/:id/uplink       { device, port } what it's plugged into (a drawn cable); { device: null } = automatic
 //   POST   /api/proxmox/nodes            { host, port?, username, password } -> { cluster, nodes: [{ name, ip, online }] }
-//   POST   /api/setup                    { name, host, port?, https?, root_user?, root_password } sets up an OpenWrt
+//   POST   /api/setup                    { name, host, port?, https?, root_user?, root_password, device_id? } sets up an OpenWrt
+//                                        device (device_id: re-run it for a device already on the map), then
 //                                        device with the root login, then adds it; returns a job to watch
 //   GET    /api/setup/:job               { state: running|done|error, log, deviceId }
 //   GET    /api/devices/:id/raw          latest normalised poll result (for debugging a device)
@@ -121,6 +122,13 @@ async function addDevice(body) {
   return { id, device: plain(db.prepare(`select ${PUBLIC_COLS} from devices where id = ?`).get(id)), poll: { ok: poll.ok, error: poll.error || null, probes: poll.result && poll.result.probes } };
 }
 
+// After a re-run setup: store the device's new read-only login, then poll it (same shape addDevice returns).
+async function updateLogin(id, d) {
+  db.prepare("update devices set username = ?, password = ? where id = ?").run(d.username, d.password, id);
+  const poll = await pollDevice(id);
+  return { id, device: plain(db.prepare(`select ${PUBLIC_COLS} from devices where id = ?`).get(id)), poll: { ok: poll.ok, error: poll.error || null, probes: poll.result && poll.result.probes } };
+}
+
 // ---------- http ----------
 function send(res, code, body) {
   res.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -192,7 +200,7 @@ async function api(req, res, url) {
     if (!b.host || !b.username || !b.password) throw new Error("host, user and password are needed to look up the nodes");
     return send(res, 200, await drivers.proxmox.listNodes({ host: String(b.host).trim(), port: b.port ? Number(b.port) : 8006, username: b.username, password: b.password, verify_tls: !!b.verify_tls }));
   }
-  if (url.pathname === "/api/setup" && method === "POST") return send(res, 202, setup.start(await readBody(req), addDevice));
+  if (url.pathname === "/api/setup" && method === "POST") return send(res, 202, setup.start(await readBody(req), addDevice, updateLogin));
   if ((r = m(/^\/api\/setup\/([0-9a-f-]+)$/)) && method === "GET") {
     const j = setup.get(r[1]);
     return send(res, j ? 200 : 404, j || { error: "no such setup job" });

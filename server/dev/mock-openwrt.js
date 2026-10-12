@@ -35,6 +35,10 @@ const devices = {
       { mac: MAC.phone, ifname: "phy0-ap0", master: "br-lan", flags: [] },
       { mac: "33:33:00:00:00:01", ifname: "lan1", master: "br-lan", flags: ["self"], state: "permanent" }
     ],
+    // a switch chip as on a TL-WDR4300: CPU on port 0, WAN on port 1 (VLAN 2), LAN jacks on 2-5 (VLAN 1)
+    swconfig: "== switch switch0\n" + [[0, "up speed:1000baseT"], [1, "up speed:1000baseT"], [2, "up speed:1000baseT"], [3, "down"], [4, "up speed:100baseT"], [5, "down"]]
+      .map(([n, l]) => `Port ${n}:\n\tmib: Port ${n} MIB counters\nRxGoodByte  : ${(n + 1) * 1000000 + Math.floor(Date.now() / 10)}\nTxByte      : ${(n + 1) * 2000000 + Math.floor(Date.now() / 5)}\n\tlink: port:${n} link:${l}\n`).join("") +
+      "VLAN 1:\n\tvid: 1\n\tports: 0t 2 3 4 5\nVLAN 2:\n\tvid: 2\n\tports: 0t 1\n",
     lldp: { lldp: { interface: { lan1: { chassis: { "ap-living": { id: { type: "mac", value: MAC.ap }, "mgmt-ip": "192.168.1.2" } }, port: { id: { type: "ifname", value: "lan" }, descr: "lan" } } } } },
     leases: { dhcp_leases: [
       { hostname: "desktop", ipaddr: "192.168.1.10", macaddr: MAC.pc.toUpperCase(), expires: 40000 },
@@ -105,6 +109,7 @@ function handler(d, creds, state) {
     if (o === "iwinfo" && m === "info") return [0, d.wifi[a.device].info];
     if (o === "iwinfo" && m === "assoclist") return [0, { results: d.wifi[a.device].assoc }];
     if (o === "file" && m === "exec" && a.command.endsWith("/fdb")) return [0, { code: 0, stdout: JSON.stringify(d.fdb) }];
+    if (o === "file" && m === "exec" && a.command.endsWith("/swconfig")) return d.swconfig ? [0, { code: 0, stdout: d.swconfig }] : [0, { code: 0, stdout: "" }];
     if (o === "file" && m === "exec" && a.command.endsWith("/lldp")) return d.lldp ? [0, { code: 0, stdout: JSON.stringify(d.lldp) }] : [4];
     if (o === "file" && m === "read" && a.path === "/proc/net/arp") return [0, { data: d.arp }];
     if (o === "luci-rpc" && m === "getDHCPLeases") return [0, d.leases];

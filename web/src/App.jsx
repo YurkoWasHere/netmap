@@ -13,6 +13,7 @@ const OPENWRT_PROBES = {
   wifi: ["Wi-Fi clients", "package rpcd-mod-iwinfo; ACL: iwinfo devices/info/assoclist"],
   fdb: ["Bridge table (what is on each port)", "package ip-bridge + /usr/libexec/netmap/fdb script; ACL: file exec on it"],
   lldp: ["LLDP neighbours (cabling)", "package lldpd + /usr/libexec/netmap/lldp script; ACL: file exec on it"],
+  switch: ["Switch-chip jacks (link, speed and traffic per jack)", "the swconfig helper: click Update on the device in this panel"],
   dhcp: ["DHCP leases (used for names only)", "luci-base (luci-rpc); ACL: luci-rpc getDHCPLeases. Only the DHCP server has these"],
   hosts: ["Host names (used for names only)", "luci-base (luci-rpc); ACL: luci-rpc getHostHints"],
   arp: ["ARP table", "package rpcd-mod-file; ACL: file read /proc/net/arp"]
@@ -75,8 +76,11 @@ function Modal({ open, onClose, title, children }) {
 
 // Automatic setup: the server logs in as root once, installs what netmap needs and adds the device
 // with a read-only login. The form gives way to the device's install output while it runs.
-function SetupForm({ onAdded, onClose, onJobState }) {
-  const [f, setF] = useState({ name: "", host: "", ssh_port: "22", port: "", https: false, root_user: "root", root_password: "" });
+// preset: re-run the setup for a device already on the map ({ deviceId, name, host, port, https }): only the admin
+// password is asked for, and the device keeps its place with its new read-only login.
+function SetupForm({ onAdded, onClose, onJobState, preset }) {
+  const [f, setF] = useState({ name: preset ? preset.name : "", host: preset ? preset.host : "", ssh_port: "22", port: preset && preset.port ? String(preset.port) : "",
+    https: !!(preset && preset.https), root_user: "root", root_password: "" });
   const [job, setJob] = useState(null);
   const [err, setErr] = useState(null);
   const logRef = useRef(null);
@@ -99,12 +103,12 @@ function SetupForm({ onAdded, onClose, onJobState }) {
   const submit = async (e) => {
     e.preventDefault();
     setErr(null);
-    try { setJob(await api.startSetup({ ...f, port: f.port ? Number(f.port) : null, ssh_port: Number(f.ssh_port) || 22 })); setF({ ...f, root_password: "" }); }
+    try { setJob(await api.startSetup({ ...f, port: f.port ? Number(f.port) : null, ssh_port: Number(f.ssh_port) || 22, device_id: preset ? preset.deviceId : undefined })); setF({ ...f, root_password: "" }); }
     catch (x) { setErr(x.message); }
   };
 
   if (job) {
-    const head = { running: `Setting up ${f.name}…`, done: `${f.name} is on the map`, error: `Setup of ${f.name} stopped` }[job.state];
+    const head = { running: `${preset ? "Updating" : "Setting up"} ${f.name}…`, done: preset ? `${f.name} is updated` : `${f.name} is on the map`, error: `Setup of ${f.name} stopped` }[job.state];
     return (
       <div className="nm-setup">
         <div className={"nm-setup-status is-" + job.state}>
@@ -128,8 +132,8 @@ function SetupForm({ onAdded, onClose, onJobState }) {
   return (
     <form className="nm-form" onSubmit={submit}>
       <div className="nm-grid2">
-        <label>Name<input value={f.name} onChange={set("name")} placeholder="Office AP" required autoFocus /></label>
-        <label>Host / IP<input value={f.host} onChange={set("host")} placeholder="192.168.1.2" required /></label>
+        {!preset && <label>Name<input value={f.name} onChange={set("name")} placeholder="Office AP" required autoFocus /></label>}
+        {!preset && <label>Host / IP<input value={f.host} onChange={set("host")} placeholder="192.168.1.2" required /></label>}
         <label>Admin user<input value={f.root_user} onChange={set("root_user")} autoComplete="off" /></label>
         <label>Admin password<input type="password" value={f.root_password} onChange={set("root_password")} autoComplete="off" required /></label>
       </div>
@@ -469,6 +473,7 @@ function Roles({ node, onChanged }) {
 
 function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices }) {
   const [editing, setEditing] = useState(false);
+  const [updating, setUpdating] = useState(false);
   const [polling, setPolling] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
   useEffect(() => { setEditing(false); setConfirmDel(false); }, [node.id]);
@@ -517,12 +522,21 @@ function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices }) {
       <div className="row" style={{ margin: "10px 0 14px" }}>
         {!unmanaged && <button className="btn" onClick={poll} disabled={polling}>{polling ? "Polling…" : "Poll now"}</button>}
         <button className="btn quiet" onClick={() => setEditing(true)}>Edit</button>
+        {node.driver === "openwrt" && <button className="btn quiet" onClick={() => setUpdating(true)}
+          title="Re-run the setup on the device with its admin password: installs netmap's newest read-only helpers">Update on the device</button>}
         <button className={"btn quiet" + (confirmDel ? " danger" : "")} onClick={async () => {
           if (!confirmDel) { setConfirmDel(true); return; }
           await api.deleteDevice(node.deviceId); onSelect(null); onChanged();
         }}>{confirmDel ? "Click again to remove" : "Remove"}</button>
       </div>
 
+      {updating && (
+        <Modal open onClose={() => setUpdating(false)} title={`Update ${node.name} on the device`}>
+          <p className="hint" style={{ marginTop: 0 }}>Installs netmap's newest read-only helpers on {device ? device.host : node.host} and gives it a new read-only login. The device keeps its place on the map.</p>
+          <SetupForm preset={{ deviceId: node.deviceId, name: node.name, host: device ? device.host : node.host, port: device && device.port, https: device && device.https }}
+            onAdded={() => onChanged()} onClose={() => setUpdating(false)} />
+        </Modal>
+      )}
       {!unmanaged && <><h3>What this device reports</h3>
       <Probes probes={node.probes} driver={node.driver} /></>}
 

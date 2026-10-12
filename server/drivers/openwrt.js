@@ -20,6 +20,7 @@ const NO_SESSION = "00000000000000000000000000000000";
 // so granting exec on them can't be used to change bridge or LLDP settings.
 const FDB_CMD = "/usr/libexec/netmap/fdb";
 const LLDP_CMD = "/usr/libexec/netmap/lldp";
+const SWCONFIG_CMD = "/usr/libexec/netmap/swconfig";
 
 const UBUS_ERRORS = { 1: "invalid command", 2: "invalid argument", 3: "method not found", 4: "not found", 5: "no data", 6: "permission denied (check the ACL)", 7: "timeout", 8: "not supported", 9: "unknown error", 10: "connection failed" };
 
@@ -158,6 +159,53 @@ function parseLldp(j, out) {
   }
 }
 
+// Routers whose jacks sit on a switch chip (swconfig: older TP-Links, Archer C7, ...) show Linux one port for
+// all of them. The helper prints `swconfig dev <sw> show`: per port a "link:" line and MIB byte counters, per
+// VLAN its member ports ("0t 2 3 4 5", t = tagged). Each jack becomes a port: the CPU port(s) (tagged-only, the
+// chip's link to the router itself) are left out; jacks untagged in the WAN interface's VLAN are WAN, the rest LAN.
+function parseSwconfig(text, out) {
+  const wanVid = (() => {
+    const wan = out.interfaces.find((i) => /^wan$/.test(i.name)) || out.interfaces.find((i) => /^wan/.test(i.name));
+    const m = wan && String(wan.device).match(/\.(\d+)$/);
+    return m ? Number(m[1]) : null;
+  })();
+  for (const block of String(text).split(/^== switch /m).slice(1)) {
+    const sw = block.split("\n")[0].trim();
+    const ports = {}, vlans = [];
+    const sections = block.split(/^(?=(?:Port|VLAN) \d+:)/m);
+    for (const sec of sections) {
+      let m = sec.match(/^Port (\d+):/);
+      if (m) {
+        const n = Number(m[1]);
+        const link = sec.match(/link:\s*port:\d+\s+link:(up|down)(?:\s+speed:(\d+)base)?/);
+        const num = (re) => { const x = sec.match(re); return x ? Number(x[1]) : null; };
+        ports[n] = { n, up: !!(link && link[1] === "up"), speed: link && link[2] ? Number(link[2]) : 0,
+          rx: num(/RxGoodByte\s*:\s*(\d+)/), tx: num(/TxByte\s*:\s*(\d+)/) };
+        continue;
+      }
+      m = sec.match(/^VLAN (\d+):/);
+      if (m) {
+        const vid = Number((sec.match(/vid:\s*(\d+)/) || [])[1] || m[1]);
+        const members = ((sec.match(/ports:\s*([^\n]*)/) || [])[1] || "").trim().split(/\s+/).filter(Boolean)
+          .map((t) => ({ n: Number(t.replace(/t$/, "")), tagged: /t$/.test(t) }));
+        vlans.push({ vid, members });
+      }
+    }
+    const untaggedIn = (n) => vlans.filter((v) => v.members.some((x) => x.n === n && !x.tagged)).map((v) => v.vid);
+    const taggedOnly = (n) => vlans.some((v) => v.members.some((x) => x.n === n && x.tagged)) && !untaggedIn(n).length;
+    const jacks = Object.values(ports).filter((p) => !taggedOnly(p.n) && untaggedIn(p.n).length).sort((a, b) => a.n - b.n);
+    let lan = 0;
+    for (const p of jacks) {
+      const isWan = wanVid != null && untaggedIn(p.n).includes(wanVid);
+      out.ports.push({
+        name: isWan ? "wan" : `lan${++lan}`, type: "swport", switch: sw, switchPort: p.n, up: true, carrier: p.up,
+        speed: p.speed >= 1000 ? `${p.speed / 1000}G` : p.speed ? `${p.speed}M` : "", mac: "", bridge: null, members: [],
+        alias: `${sw} port ${p.n}${untaggedIn(p.n).length ? ", VLAN " + untaggedIn(p.n).join("/") : ""}`, rxBytes: p.rx, txBytes: p.tx
+      });
+    }
+  }
+}
+
 function parseLeases(l, out) {
   for (const x of l.dhcp_leases || []) {
     const mac = normMac(x.macaddr);
@@ -229,6 +277,15 @@ async function poll(dev) {
   });
   // DHCP leases and host hints only exist on the device that runs dnsmasq (usually the main router);
   // on a dumb AP these come back empty, which is fine.
+  // The jacks on a switch chip, on routers that have one (needs the swconfig helper from the setup script).
+  let hasSwitch = true;
+  await probe("switch", async () => {
+    const r = await c("file", "exec", { command: SWCONFIG_CMD });
+    if (r.code) throw new Error(`${SWCONFIG_CMD} exited ${r.code}: ${(r.stderr || "").trim()}`);
+    if (!/== switch/.test(r.stdout || "")) { hasSwitch = false; return; }
+    parseSwconfig(r.stdout, out);
+  });
+  if (!hasSwitch) delete out.probes.switch; // no switch chip on this one: nothing to list
   await probe("dhcp", async () => parseLeases(await c("luci-rpc", "getDHCPLeases"), out));
   await probe("hosts", async () => parseHints(await c("luci-rpc", "getHostHints"), out));
   await probe("arp", async () => parseArp((await c("file", "read", { path: "/proc/net/arp" })).data, out));
@@ -246,4 +303,4 @@ async function poll(dev) {
 // Forget the remembered endpoint (after setup installs uhttpd-mod-ubus, /ubus becomes available).
 const resetEndpoint = (dev) => pathFor.delete(key(dev));
 
-module.exports = { poll, call, login, resetEndpoint, FDB_CMD, LLDP_CMD };
+module.exports = { poll, call, login, resetEndpoint, parseSwconfig, FDB_CMD, LLDP_CMD, SWCONFIG_CMD };

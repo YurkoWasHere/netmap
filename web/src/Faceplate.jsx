@@ -14,8 +14,10 @@ function panelPorts(d) {
   if (d.driver === "proxmox") return ports.filter((p) => p.type === "eth").sort(natural);
   if (d.driver === "openwrt") {
     // DSA ports (lan1..lan4, wan) if the router has them, else the plain ethernet devices; never VLANs or bridges
-    const dsa = ports.filter((p) => /^(lan\d+|wan\d*)$/.test(p.name));
-    const list = dsa.length ? dsa : ports.filter((p) => /^eth\d+$/.test(p.name));
+    // jacks on a switch chip (swconfig, read by the helper), else DSA ports (lan1.., wan), else plain ethernet
+    const chip = ports.filter((p) => p.type === "swport");
+    const dsa = ports.filter((p) => p.type !== "swport" && /^(lan\d+|wan\d*)$/.test(p.name));
+    const list = chip.length ? chip : dsa.length ? dsa : ports.filter((p) => /^eth\d+$/.test(p.name));
     return list.sort((a, b) => (/^wan/.test(a.name) ? -1 : 0) - (/^wan/.test(b.name) ? -1 : 0) || natural(a, b));
   }
   return [];

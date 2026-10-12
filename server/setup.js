@@ -23,16 +23,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // A job record for the API: no credentials in it.
 const view = (j) => j && { id: j.id, state: j.state, log: j.log, deviceId: j.deviceId, error: j.error };
 
-function start(body, addDevice) {
+// body.device_id: re-run the setup for a device that's already on the map (e.g. to install newer helpers); its
+// stored login is replaced with the new read-only one instead of adding a second device.
+function start(body, addDevice, updateDevice) {
   const name = String(body.name || "").trim(), host = String(body.host || "").trim();
-  if (!name || !host || !body.root_password) throw new Error("name, host and the root password are required");
+  if ((!name && !body.device_id) || !host || !body.root_password) throw new Error("name, host and the root password are required");
   const conn = { host, port: body.port ? Number(body.port) : null, https: body.https ? 1 : 0, verify_tls: body.verify_tls ? 1 : 0 };
   const root = { ...conn, username: String(body.root_user || "root"), password: String(body.root_password), sshPort: Number(body.ssh_port) || 22 };
   // base64url: letters, digits, - and _ only, so it's safe inside single quotes in the shell.
   const monitor = { username: "monitor", password: crypto.randomBytes(18).toString("base64url") };
   const job = { id: crypto.randomUUID(), state: "running", log: [], deviceId: null, error: null };
   jobs.set(job.id, job);
-  run(job, { name, conn, root, monitor }, addDevice)
+  const deviceId = body.device_id ? Number(body.device_id) : null;
+  const save = deviceId ? (d) => updateDevice(deviceId, d) : addDevice;
+  run(job, { name, conn, root, monitor }, save)
     .catch((e) => { job.state = "error"; job.error = e.message || String(e); job.log.push("✕ " + job.error); })
     .finally(() => { root.password = null; setTimeout(() => jobs.delete(job.id), 60 * 60 * 1000); });
   return view(job);
@@ -60,7 +64,7 @@ async function run(job, { name, conn, root, monitor }, addDevice) {
     try { await login(dev); ok = true; } catch (e) { lastErr = e; await sleep(2000); }
   }
   if (!ok) throw new Error(`setup finished but the new monitor login doesn't work yet (${lastErr.message}); try /etc/init.d/rpcd restart on the device`);
-  say("Read-only login works. Adding the device and probing it…");
+  say("Read-only login works. Saving it and probing the device…");
   const added = await addDevice({ name, ...conn, ...monitor });
   job.deviceId = added.id;
   say(added.poll.ok ? "✓ Done." : `Added, but the first poll failed: ${added.poll.error}`);

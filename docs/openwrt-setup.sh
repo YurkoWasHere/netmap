@@ -5,7 +5,7 @@
 #
 # What it does (all read-only for netmap; see openwrt-setup.md for the why of each step):
 #   1. installs uhttpd-mod-ubus, rpcd-mod-file, rpcd-mod-iwinfo, ip-bridge, lldpd (and luci-base if missing)
-#   2. adds two no-argument helper scripts: /usr/libexec/netmap/fdb and /usr/libexec/netmap/lldp
+#   2. adds no-argument helper scripts: /usr/libexec/netmap/fdb, lldp and swconfig
 #   3. adds an rpcd ACL "netmap" that can call only the methods netmap uses
 #   4. adds an rpcd login "monitor" with that ACL and the password you pass
 #   5. keeps all of it across sysupgrade
@@ -38,7 +38,13 @@ cat > /usr/libexec/netmap/lldp <<'EOF'
 # netmap: LLDP neighbours as JSON. Ignores arguments on purpose.
 exec /usr/sbin/lldpcli -f json show neighbors details
 EOF
-chmod 755 /usr/libexec/netmap/fdb /usr/libexec/netmap/lldp
+cat > /usr/libexec/netmap/swconfig <<'EOF'
+#!/bin/sh
+# netmap: link, speed, VLANs and counters of each jack on the router's switch chip (swconfig). Ignores arguments.
+command -v swconfig >/dev/null 2>&1 || exit 0
+for sw in $(swconfig list 2>/dev/null | awk '{print $2}'); do echo "== switch $sw"; swconfig dev "$sw" show; done
+EOF
+chmod 755 /usr/libexec/netmap/fdb /usr/libexec/netmap/lldp /usr/libexec/netmap/swconfig
 
 cat > /usr/share/rpcd/acl.d/netmap.json <<'EOF'
 {
@@ -56,7 +62,8 @@ cat > /usr/share/rpcd/acl.d/netmap.json <<'EOF'
       "file": {
         "/proc/net/arp": ["read"],
         "/usr/libexec/netmap/fdb": ["exec"],
-        "/usr/libexec/netmap/lldp": ["exec"]
+        "/usr/libexec/netmap/lldp": ["exec"],
+        "/usr/libexec/netmap/swconfig": ["exec"]
       }
     }
   }
