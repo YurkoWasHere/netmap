@@ -1,0 +1,7 @@
+{
+  "host": "127.0.0.1",
+  "port": 8090,
+  "db": "netmap.db",
+  "pollSeconds": 60,
+  "clientMaxAgeMinutes": 60
+}

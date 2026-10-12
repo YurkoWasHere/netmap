@@ -1,0 +1,8 @@
+# secrets and local state: device logins live in the database, SNMP/API settings in config.json
+server/netmap.db*
+server/*.db
+server/*.db-*
+server/config.json
+# dependencies and build output
+node_modules/
+web/dist/
