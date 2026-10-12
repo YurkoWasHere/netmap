@@ -8,6 +8,8 @@
 //   core      devices marked "Core switch" always hang directly off the gateway (drawn on the row under it).
 //             If one is really cabled through another core switch, that cable is returned as a `cross` edge.
 //   uplink    on every other device, the port where it sees the root's MAC.
+//   memory    the last confirmed connection (uplinks table) stands in for up to 7 days when nothing is seen
+//             right now, so a quiet link whose MAC-table entry aged out doesn't drop off the map.
 //   parent    of device Y: among devices X that see Y on a port that isn't X's uplink, the closest one, i.e.
 //             the one whose port has the fewest MACs behind it. A hand-drawn cable beats LLDP, which beats
 //             the MAC tables. LLDP only counts on a physical port: OpenWrt's lldpd on br-lan hears every
@@ -20,6 +22,7 @@
 // most directly: Wi-Fi association first, then the bridge port with the fewest MACs behind it (a leaf port,
 // not an uplink), then ARP on the router. Names come from DHCP leases and host hints; makers from the OUI list.
 const { all, plain } = require("./db.js");
+const REMEMBER_DAYS = 7;
 
 // An LLDP neighbour heard on a bridge (br-lan) shares the network but isn't necessarily on a cable to us.
 const isBridgePort = (p) => !p || /^(br-|bridge)/.test(p);
@@ -114,6 +117,9 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
 
   // Candidates for each device's parent, best first: drawn cable, LLDP, then MAC table (fewest MACs wins).
   const parentOf = {};
+  const devIds = new Set(devices.map((d) => d.id));
+  const rememberSince = new Date(Date.now() - REMEMBER_DAYS * 86400000).toISOString();
+  const remembered = Object.fromEntries(all(db.prepare("select * from uplinks where seen_at >= ?"), rememberSince).map((r) => [r.device_id, r]));
   const isCore = new Set(devices.filter((d) => d.is_core && d.id !== root).map((d) => d.id));
   const coreLinks = []; // real cables between core switches, drawn beside the tree
   for (const y of devices.map((d) => d.id)) {
@@ -132,6 +138,12 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
     }
     // A drawn cable or LLDP link to a device that is itself below y would make a loop; prefer candidates
     // that y does not see on a downlink.
+    // Nothing seen right now (an entry aged out of a MAC table: a quiet link can drop out for a few minutes):
+    // fall back to the last confirmed connection, for up to REMEMBER_DAYS.
+    const mem = remembered[y];
+    if (!cands.some((c) => c.via !== "role") && mem && mem.parent_id !== y && devIds.has(mem.parent_id)) {
+      cands.push({ x: mem.parent_id, xPort: mem.parent_port, yPort: mem.own_port, via: "remembered", rank: 3, macs: 0, seenVia: mem.via, seenAt: mem.seen_at });
+    }
     cands.sort((a, b) => a.rank - b.rank || a.macs - b.macs);
     const best = cands.find((c) => !(seen[y] && seen[y][c.x] && seen[y][c.x].port !== uplink[y]) || c.via === "manual") || cands[0];
     if (isCore.has(y) && root != null) {
@@ -191,6 +203,7 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
       wan: d.id === root && r ? (r.interfaces || []).filter((i) => /^wan|pppoe|^lte|^wwan/i.test(i.name) && i.up)
         .map((i) => ({ name: i.name, device: i.device, ipv4: i.ipv4, proto: i.proto })) : [],
       parent: p ? "d" + p.x : null, parentPort: p ? p.xPort : null, uplinkPort: p ? p.yPort : uplink[d.id] || null, parentVia: p ? p.via : null,
+      parentSeenAt: p && p.seenAt ? p.seenAt : null, parentSeenVia: p && p.seenVia ? p.seenVia : null,
       // the device's own name for its uplink port (where it sees the gateway), for drawing it on its faceplate
       localUplink: uplink[d.id] || null,
       // where it's really plugged in, when the role places it somewhere else on the map

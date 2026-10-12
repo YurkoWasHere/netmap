@@ -109,6 +109,26 @@ async function pollAll() {
     try { await pollDevice(id); }
     catch (e) { if (!/no such device/.test(e.message)) console.error(`poll of device ${id} failed: ${e.message}`); }
   }
+  rememberUplinks();
+}
+
+// Store each device's connection as confirmed by real evidence (MAC tables, LLDP, a cable you set), so the map
+// can keep a link for a while when its MAC-table entry ages out (graph.js falls back to it).
+function rememberUplinks() {
+  try {
+    const g = build(db, { clientMaxAgeMinutes: CLIENT_MAX_AGE });
+    const up = db.prepare(`insert into uplinks (device_id, parent_id, parent_port, own_port, via, seen_at) values (?, ?, ?, ?, ?, ?)
+      on conflict(device_id) do update set parent_id = excluded.parent_id, parent_port = excluded.parent_port,
+        own_port = excluded.own_port, via = excluded.via, seen_at = excluded.seen_at`);
+    const now = new Date().toISOString();
+    for (const n of g.nodes) {
+      if (n.kind !== "device" || !n.parent) continue;
+      // a core switch's real connection, else its own; never a role placement or an older memory
+      const real = n.realParent ? { p: n.realParent, pp: n.realPort, op: n.realUplinkPort, via: n.realVia } : { p: n.parent, pp: n.parentPort, op: n.uplinkPort, via: n.parentVia };
+      if (!["fdb", "lldp", "manual"].includes(real.via)) continue;
+      up.run(n.deviceId, Number(real.p.slice(1)), real.pp || "", real.op || "", real.via, now);
+    }
+  } catch (e) { console.error("remembering uplinks failed:", e.message); }
 }
 
 async function addDevice(body) {

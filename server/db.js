@@ -63,6 +63,16 @@ create table if not exists links (
   note        text not null default '',
   seen_at     text
 );
+-- the last confirmed connection of each device (parent, ports, how it was found), so a link survives a
+-- MAC-table entry ageing out for a while; see graph.js
+create table if not exists uplinks (
+  device_id   integer primary key references devices(id) on delete cascade,
+  parent_id   integer not null references devices(id) on delete cascade,
+  parent_port text not null default '',
+  own_port    text not null default '',
+  via         text not null,
+  seen_at     text not null
+);
 create table if not exists names (
   mac         text primary key,
   hostname    text not null default '',

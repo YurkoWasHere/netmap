@@ -479,7 +479,7 @@ function PauseControl({ node, onChanged }) {
 }
 
 const VIA = { fdb: "from the MAC tables", lldp: "from LLDP", manual: "set by you", role: "core switch, placed under the gateway",
-  behind: "behind the unmanaged switch on that port" };
+  behind: "behind the unmanaged switch on that port", remembered: "remembered" };
 
 // The device's role shapes the map's hierarchy; it saves as soon as it's picked.
 const ROLES = {
@@ -538,7 +538,7 @@ function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices }) {
         <dt>Plugged into</dt><dd>{node.isRoot ? `The internet (top of the map${node.rootMarked ? "" : ", picked because it has the WAN"})`
           : node.realParent ? <>{nameOf(Number(node.realParent.slice(1)))} {node.realPort ? `port ${node.realPort}` : ""}{node.realUplinkPort ? ` ↔ ${node.realUplinkPort}` : ""} <span className="hint">({VIA[node.realVia] || node.realVia}; drawn on the core row because of its role)</span></>
           : node.parentVia === "role" ? <span className="hint">Not worked out yet; drawn on the core row because of its role</span>
-          : node.parent ? <>{nameOf(Number(node.parent.slice(1)))} {node.parentPort ? `port ${node.parentPort}` : ""}{node.uplinkPort ? ` ↔ ${node.uplinkPort}` : ""} <span className="hint">({VIA[node.parentVia] || node.parentVia})</span></>
+          : node.parent ? <>{nameOf(Number(node.parent.slice(1)))} {node.parentPort ? `port ${node.parentPort}` : ""}{node.uplinkPort ? ` ↔ ${node.uplinkPort}` : ""} <span className="hint">({node.parentVia === "remembered" ? `not seen right now; last confirmed ${ago(node.parentSeenAt)} from ${VIA[node.parentSeenVia] || node.parentSeenVia}` : VIA[node.parentVia] || node.parentVia})</span></>
           : <span className="hint">{unmanaged ? ((device && device.mac) ? "Not seen yet: no switch has its MAC in its table" : "Nothing yet: pick it below, or give it a MAC") : "Not worked out yet: no other device sees it in its MAC table"}</span>}</dd>
         {unmanaged && <><dt>MAC</dt><dd className="mono">{(device && device.mac) || <span className="hint">none: placed only where you put it</span>}</dd></>}
         {unmanaged && device && device.mac && <><dt>IP</dt><dd>{node.macIp && node.macIp.ip
