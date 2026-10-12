@@ -1,7 +1,10 @@
 // Ubiquiti EdgeOS (EdgeRouter) MAC table over SSH: which MAC is on which jack of switch0, which EdgeOS doesn't
 // expose over SNMP or its web UI. EdgeOS only gives a shell to admin-level users, so the login is locked down:
-// an admin user with no usable password whose only SSH key is forced to run one read-only script
-// (docs/edgeos-netmap-read.sh as /config/scripts/netmap-read). Whatever netmap asks to run, the router runs that.
+// an admin user with no usable password and one SSH key, which sshd forces to run one read-only script
+// (docs/edgeos-netmap-read.sh as /config/scripts/netmap-read; the lock is docs/edgeos-netmap-lock.sh, because
+// EdgeOS can't store command="..." on a key). Whatever netmap asks to run, the router runs that script.
+// Every poll checks the lock: netmap asks for "echo NETMAP-NOT-LOCKED"; a locked login prints the script's
+// output instead. If the marker comes back the login has a full shell, and netmap refuses to use it.
 //
 // The key pair is made by netmap when the data source is added: the private key is stored as the collector's
 // password (never sent back by the API), the public key goes on the router (setupText() prints the commands).
@@ -10,6 +13,8 @@ const path = require("path");
 const { Client, utils } = require("ssh2");
 
 const SCRIPT = path.join(__dirname, "..", "..", "docs", "edgeos-netmap-read.sh");
+const LOCK = path.join(__dirname, "..", "..", "docs", "edgeos-netmap-lock.sh");
+const MARKER = "NETMAP-NOT-LOCKED";
 const normMac = (m) => String(m || "").toLowerCase();
 const isMac = (m) => /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(m);
 
@@ -29,7 +34,7 @@ function run(col) {
     let settled = false;
     const done = (e, v) => { if (settled) return; settled = true; clearTimeout(t); c.end(); e ? reject(e) : resolve(v); };
     const t = setTimeout(() => done(new Error("timed out")), 20000);
-    c.on("ready", () => c.exec("netmap-read", (err, st) => {
+    c.on("ready", () => c.exec(`echo ${MARKER}`, (err, st) => {
       if (err) return done(err);
       let out = "";
       st.on("data", (d) => (out += d));
@@ -73,33 +78,41 @@ function parse(text) {
 
 async function collect(col) {
   const text = await run(col);
-  if (!/== fdb/.test(text)) throw new Error("the key works but didn't run netmap-read: check the key's command= option and /config/scripts/netmap-read");
+  if (text.includes(MARKER)) throw new Error("NOT LOCKED: this key gets a full shell on the router, so netmap won't use it. Run step 3 of the setup commands (the sshd lock)");
+  if (!/== fdb/.test(text)) throw new Error("the key works but the router didn't run netmap-read: check /config/scripts/netmap-read and the lock (step 3)");
   const seen = parse(text);
   if (!seen.size) throw new Error("netmap-read ran but found no MACs on switch0");
   return { probes: { mactable: "ok" }, clients: [...seen].map(([mac, s]) => ({ mac, via: "fdb", iface: s.iface, detail: { vlan: s.vlan, source: "edgeos" } })) };
 }
 
-// The commands to paste on the router: the script, then the locked-down user with netmap's public key.
+// The commands to paste on the router: the script, the user with netmap's public key, then the sshd lock.
 function setupText(col) {
   const pub = publicKey(col.password);
   const user = col.username || "netmap-ssh";
   const script = fs.readFileSync(SCRIPT, "utf8").trimEnd();
+  const lock = fs.readFileSync(LOCK, "utf8").trimEnd().replace(/^USER_NAME=.*$/m, `USER_NAME=${user}`);
   return `# 1. On the router, logged in as an admin (e.g. ubnt), NOT in configure mode: install the read-only script
-sudo mkdir -p /config/scripts
+sudo mkdir -p /config/scripts/post-config.d
 sudo tee /config/scripts/netmap-read > /dev/null <<'NETMAP_EOF'
 ${script}
 NETMAP_EOF
 sudo chmod 755 /config/scripts/netmap-read
 
-# 2. A login for netmap that can only run that script: admin level (EdgeOS gives other levels no shell),
-#    no usable password, and one SSH key forced to run netmap-read
+# 2. A login for netmap: admin level (EdgeOS gives other levels no shell), no usable password, netmap's key
 configure
 set system login user ${user} level admin
 set system login user ${user} authentication encrypted-password '!'
 set system login user ${user} authentication public-keys netmap type ${pub.type}
 set system login user ${user} authentication public-keys netmap key ${pub.key}
-set system login user ${user} authentication public-keys netmap options 'command="/config/scripts/netmap-read",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty'
 commit ; save ; exit
+
+# 3. Lock that login to the script (sshd ForceCommand). EdgeOS rewrites sshd_config at boot, so this is
+#    installed in post-config.d to re-apply itself, and run once now. netmap refuses the key until it's locked.
+sudo tee /config/scripts/post-config.d/netmap-ssh-lock > /dev/null <<'NETMAP_EOF'
+${lock}
+NETMAP_EOF
+sudo chmod 755 /config/scripts/post-config.d/netmap-ssh-lock
+sudo /config/scripts/post-config.d/netmap-ssh-lock
 `;
 }
 
