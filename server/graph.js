@@ -189,6 +189,8 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
       wan: d.id === root && r ? (r.interfaces || []).filter((i) => /^wan|pppoe|^lte|^wwan/i.test(i.name) && i.up)
         .map((i) => ({ name: i.name, device: i.device, ipv4: i.ipv4, proto: i.proto })) : [],
       parent: p ? "d" + p.x : null, parentPort: p ? p.xPort : null, uplinkPort: p ? p.yPort : uplink[d.id] || null, parentVia: p ? p.via : null,
+      // the device's own name for its uplink port (where it sees the gateway), for drawing it on its faceplate
+      localUplink: uplink[d.id] || null,
       // where it's really plugged in, when the role places it somewhere else on the map
       realParent: p && p.real ? "d" + p.real.x : null, realPort: p && p.real ? p.real.xPort : null, realUplinkPort: p && p.real ? p.real.yPort : null, realVia: p && p.real ? p.real.via : null,
       system: r && r.system, interfaces: (r && r.interfaces) || [], ports: (r && r.ports) || [], wifi: (r && r.wifi) || [],

@@ -7,6 +7,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Icon, deviceIcon, clientIcon } from "./icons.jsx";
+import { Faceplate } from "./Faceplate.jsx";
 
 const DEV_W = 230, CLIENT_W = 185;
 
@@ -36,6 +37,7 @@ const DeviceNode = memo(function DeviceNode({ data, selected }) {
           </div>
         </div>
       </div>
+      <Faceplate data={data} />
       <Handle type="source" position={Position.Bottom} />
       {/* side handles for cables between devices; picked automatically, not for drawing */}
       <Handle id="l-in" type="target" position={Position.Left} isConnectable={false} />
@@ -181,7 +183,7 @@ const nodeTypes = { device: DeviceNode, client: ClientNode, port: PortNode, inte
 // they take the row right under it, and the gateway's other ports, clients and non-core devices drop one row
 // further (CORE_DROP), level with what hangs under the core switches.
 const CW = CLIENT_W + 15, CH = 94, GAP = 70, MAX_ROWS = 8, FOLD_OVER = 6, PORT_W = 185;
-const PORT_DY = 135, KIDS_DY = 215; // port row and first client/device row, below a device's top
+const PORT_DY = 175, KIDS_DY = 255; // port row and first client/device row, below a device's top (faceplate included)
 const CORE_DROP = KIDS_DY, INET_W = 200, INET_DY = 175;
 const natural = (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true });
 // Long interface names the way switch CLIs write them: GigabitEthernet5 -> Gi5, TenGigabitEthernet1/0/1 -> Te1/0/1
