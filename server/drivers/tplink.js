@@ -6,8 +6,10 @@
 // already has and only logs in when that has expired (or someone's logout ended it).
 //
 // Returns the normalised shape (see drivers/openwrt.js). What these switches can't give:
-//   no MAC address table and no LLDP: clients behind the switch are placed by the "behind it" rule
-//   (noMacTable: true), like an unmanaged switch
+//   no LLDP, and on stock firmware no MAC address table: clients behind the switch are then placed by the
+//   "behind it" rule (noMacTable: true), like an unmanaged switch. Switches patched with a MacTableRpm.htm page
+//   expose the ASIC's address table as /MacTable00.dat .. /MacTable40.dat (65 blocks of 64 slots); those are
+//   read and decoded the way that page does it, and clients land on their real sockets.
 //   packet counters only, no byte counters: ports carry rxPkts/txPkts and rates.js turns them into packets/s
 const http = require("http");
 
@@ -98,6 +100,22 @@ async function poll(dev) {
       });
     }
 
+    // Patched firmware only: the MAC address table. ASIC port n is front socket n + 1 (checked on a TL-SG108E
+    // v5: every learned MAC sat on a socket with link); ports past the last socket are the CPU.
+    let hasTable = false;
+    await probe("mactable", async () => {
+      const entries = await readMacTable(dev);
+      if (!entries) return;
+      hasTable = true;
+      out.noMacTable = false;
+      for (const e of entries) {
+        const socket = e.asicPort + 1;
+        if (socket > count || e.static) continue; // the switch's own (CPU) and static entries
+        out.clients.push({ mac: e.mac, via: "fdb", iface: String(socket), detail: { vlan: e.vlan, asicPort: e.asicPort } });
+      }
+    });
+    if (!hasTable) delete out.probes.mactable; // stock firmware: nothing to report
+
     await probe("vlans", async () => {
       const q = readVar(await request(dev, "GET", "/Vlan8021QRpm.htm"), "qvlan_ds");
       out.vlans = q && q.state ? (q.vids || []).map((id, k) => ({ id, name: (q.names || [])[k] || "", tagged: q.tagMbrs ? q.tagMbrs[k] : 0, untagged: q.untagMbrs ? q.untagMbrs[k] : 0 })) : [];
@@ -107,4 +125,33 @@ async function poll(dev) {
   return out;
 }
 
-module.exports = { poll, readVar };
+// One line of a MacTableNN.dat block: "slot status w0 .. w5" in hex (8 x 4 digits). Decoded as the patched
+// MacTableRpm.htm page does; returns null for empty, invalid, multicast and aged-out slots.
+function decodeMacLine(line) {
+  if (!/^[0-9a-f]{4}( [0-9a-f]{4}){7}$/.test(line)) throw new Error("unexpected MAC table line");
+  const [, status, ...w] = line.split(" ").map((x) => parseInt(x, 16));
+  const mac = [w[2] >> 8, w[2] & 255, w[1] >> 8, w[1] & 255, w[0] >> 8, w[0] & 255];
+  const age = (w[4] >> 11) & 7, fixed = !!(w[5] & 32);
+  if (!(status & 0x1000) || mac[0] & 1 || w[3] & 0x1000 || (!age && !fixed) || mac.every((x) => x === 0)) return null;
+  return {
+    mac: mac.map((x) => x.toString(16).padStart(2, "0")).join(":"),
+    asicPort: ((w[4] >> 8) & 7) | (w[3] & 0x8000 ? 8 : 0),
+    vlan: w[3] & 0x2000 ? w[3] & 4095 : (w[4] >> 3) & 15,
+    static: fixed
+  };
+}
+
+// The whole table, or null when the switch doesn't have the patched page.
+async function readMacTable(dev) {
+  const page = await request(dev, "GET", "/MacTableRpm.htm").catch(() => null);
+  if (!page || !/MacTable/.test(page)) return null;
+  const entries = [];
+  for (let block = 0; block < 65; block++) {
+    const lines = (await request(dev, "GET", `/MacTable${block.toString(16).padStart(2, "0")}.dat`)).trim().split("\n");
+    if (lines[0] !== "MACT1" || lines[lines.length - 1] !== "END" || lines.length !== 66) throw new Error(`MAC table block ${block} incomplete`);
+    for (const l of lines.slice(1, -1)) { const e = decodeMacLine(l); if (e) entries.push(e); }
+  }
+  return entries;
+}
+
+module.exports = { poll, readVar, decodeMacLine };
