@@ -355,7 +355,7 @@ function DeviceForm({ initial, driver: newDriver = "openwrt", onDone, onCancel }
           <label>User<input value={f.username} onChange={set("username")} placeholder="admin" autoComplete="off" /></label>
           <label>Password<input type="password" value={f.password} onChange={set("password")} autoComplete="new-password" placeholder={editing ? "unchanged" : ""} required={!editing} /></label>
         </div>
-        <p className="hint">The switch allows one web login at a time; netmap logs out after every poll, but if you're logged in to its page in a browser, a poll can fail until you log out.</p>
+        <p className="hint">The switch allows one web login at a time. netmap stays logged in (logging out would end every session on the switch), so if you log in to its page in a browser, pause polling while you do.</p>
       </>) : driver === "proxmox" ? (<>
         <div className="row">
           <label>Host / IP<input value={f.host} onChange={set("host")} required /></label>
@@ -420,13 +420,15 @@ function Probes({ probes, driver }) {
 
 // Power the switch delivers to PoE devices, and the energy recorded from it (Wh / kWh).
 const fmtWh = (wh) => (wh == null ? "—" : wh >= 1000 ? `${(wh / 1000).toFixed(2)} kWh` : `${wh.toFixed(wh >= 100 ? 0 : 1)} Wh`);
+// GigabitEthernet5 -> Gi5, as switches abbreviate them on their own CLIs
+const shortPort = (n) => String(n).replace(/^TenGigabitEthernet/i, "Te").replace(/^GigabitEthernet/i, "Gi").replace(/^FastEthernet/i, "Fa");
 function PoeSection({ poe, ports: all = [] }) {
   // ports with measured power (from a collector such as the Netgear web UI)
   const ports = all.filter((p) => p.poe && p.poe.mW != null && p.poe.status === "delivering");
   const pct = poe.budgetW ? Math.round((poe.usedW / poe.budgetW) * 100) : null;
   return (
     <>
-      <h3>PoE power</h3>
+      <h3 className="first">PoE power</h3>
       <dl className="facts">
         <dt>Now</dt><dd>{poe.usedW != null ? `${poe.usedW} W` : "—"}{poe.budgetW ? ` of ${poe.budgetW} W budget (${pct}%)` : ""}</dd>
         <dt>Today</dt><dd>{fmtWh(poe.todayWh)}</dd>
@@ -435,7 +437,7 @@ function PoeSection({ poe, ports: all = [] }) {
       </dl>
       <p className="hint" style={{ marginTop: 4 }}>Power delivered to PoE devices (not the switch's own use), sampled every poll{ports.length ? "" : "; the switch reports a total, not per port"}.</p>
       {ports.length > 0 && <table><tbody>{ports.map((p) => (
-        <tr key={p.name}><td className="mono">{p.name}</td><td>{(p.poe.mW / 1000).toFixed(1)} W</td><td className="mono">{p.poe.volts} V · {p.poe.mA} mA</td><td>{p.poe.cls != null ? `class ${p.poe.cls}` : ""}</td></tr>
+        <tr key={p.name} className="nowrap"><td className="mono" title={p.name}>{shortPort(p.name)}</td><td><b>{(p.poe.mW / 1000).toFixed(1)} W</b></td><td className="mono">{p.poe.volts} V · {p.poe.mA} mA</td><td>{p.poe.cls != null ? `cl. ${p.poe.cls}` : ""}</td></tr>
       ))}</tbody></table>}
     </>
   );
@@ -583,65 +585,195 @@ function Collectors({ node, device, onChanged }) {
   );
 }
 
-function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices }) {
-  const [editing, setEditing] = useState(false);
+// Vertical tabs down the left of the details panel; the name header stays above them.
+const TAB_ICON = {
+  status: <><path d="M3 12h4l3-7 4 14 3-7h4" /></>,
+  ports: <><rect x="3" y="7" width="18" height="10" rx="1.5" /><path d="M6.5 10.5h3v3h-3zM14.5 10.5h3v3h-3z" /></>,
+  vms: <><path d="M12 2.8l8 4.4v9.6l-8 4.4-8-4.4V7.2z" /><path d="M4 7.2l8 4.4 8-4.4M12 11.6v9.6" /></>,
+  power: <><path d="M13 2.5L5 13.5h6l-1 8 8-11h-6z" /></>,
+  checks: <><path d="M4 6.5l1.8 1.8L9 5M4 12.5l1.8 1.8L9 11M4 18.5l1.8 1.8L9 17" /><path d="M12 7h8M12 13h8M12 19h8" /></>,
+  settings: <><circle cx="12" cy="12" r="3" /><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" /></>
+};
+function DetailTabs({ tabs, tab, onTab, children }) {
+  return (
+    <div className="nm-vtabs">
+      <nav role="tablist" aria-orientation="vertical">
+        {tabs.map((t) => (
+          <button key={t.id} type="button" role="tab" aria-selected={t.id === tab} onClick={() => onTab(t.id)} title={t.title || t.label}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{TAB_ICON[t.id]}</svg>
+            <span>{t.label}</span>
+            {t.alert ? <i className="alert" aria-label="needs attention" /> : null}
+          </button>
+        ))}
+      </nav>
+      <div className="nm-vtab-body" role="tabpanel">{children}</div>
+    </div>
+  );
+}
+
+// "Plugged into" as a sentence, for the Status tab (it's changed in Settings).
+function pluggedText(node, nameOf, unmanaged, device) {
+  if (node.isRoot) return `The internet (top of the map${node.rootMarked ? "" : ", picked because it has the WAN"})`;
+  if (node.realParent) return <>{nameOf(Number(node.realParent.slice(1)))} {node.realPort ? `port ${node.realPort}` : ""}{node.realUplinkPort ? ` ↔ ${node.realUplinkPort}` : ""} <span className="hint">({VIA[node.realVia] || node.realVia}; drawn on the core row because of its role)</span></>;
+  if (node.parentVia === "role") return <span className="hint">Not worked out yet; drawn on the core row because of its role</span>;
+  if (node.parent) return <>{nameOf(Number(node.parent.slice(1)))} {node.parentPort ? `port ${node.parentPort}` : ""}{node.uplinkPort ? ` ↔ ${node.uplinkPort}` : ""} <span className="hint">({node.parentVia === "remembered" ? `not seen right now; last confirmed ${ago(node.parentSeenAt)} from ${VIA[node.parentSeenVia] || node.parentSeenVia}` : VIA[node.parentVia] || node.parentVia})</span></>;
+  return <span className="hint">{unmanaged ? ((device && device.mac) ? "Not seen yet: no switch has its MAC in its table" : "Nothing yet: set it in Settings, or give it a MAC") : "Not worked out yet: no other device sees it in its MAC table"}</span>;
+}
+
+const physicalPorts = (node) => node.ports.filter((p) => p.type !== "bridge" && !/^(lo|ifb|gre|teql|sit|ip6tnl|erspan)/.test(p.name));
+
+function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices, clients, tab, onTab }) {
   const [updating, setUpdating] = useState(false);
   const [polling, setPolling] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
-  useEffect(() => { setEditing(false); setConfirmDel(false); }, [node.id]);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => { setConfirmDel(false); setSaved(false); }, [node.id]);
   const s = node.system || {};
   const poll = async () => { setPolling(true); try { await api.pollDevice(node.deviceId); } finally { setPolling(false); onChanged(); } };
-  if (editing) return (<><h2>Edit {node.name}</h2><DeviceForm initial={device} onDone={() => { setEditing(false); onChanged(); }} onCancel={() => setEditing(false)} /></>);
-  const ports = node.ports.filter((p) => p.type !== "bridge" && !/^(lo|ifb|gre|teql|sit|ip6tnl|erspan)/.test(p.name));
+  const ports = physicalPorts(node);
   const unmanaged = node.status === "unmanaged";
   const drawn = node.parentVia === "manual";
+  const failing = Object.values(node.probes || {}).filter((v) => v !== "ok").length;
+  const guests = node.guests || [];
+  const tabs = [
+    { id: "status", label: "Status" },
+    !unmanaged && { id: "ports", label: "Ports", title: "Ports, Wi-Fi, networks and neighbours" },
+    guests.length > 0 && { id: "vms", label: "VMs", title: "VMs and containers" },
+    node.poe && { id: "power", label: "Power", title: "PoE power and energy" },
+    !unmanaged && { id: "checks", label: "Checks", title: "What this device reports, probe by probe", alert: failing > 0 },
+    { id: "settings", label: "Settings" }
+  ].filter(Boolean);
+  const cur = tabs.some((t) => t.id === tab) ? tab : "status";
+  const linked = ports.filter((p) => p.carrier).length;
+  const wifiClients = node.wifi.reduce((a, w) => a + (w.clients || 0), 0);
+  const web = webUrl(node, device);
+
   return (
     <>
       <div className="nm-detail-head">
         <div>
           <div className="eyebrow">{unmanaged ? "Unmanaged switch" : s.model || node.driver}</div>
           <h2>{node.name}</h2>
-          {webUrl(node, device) && <a className="nm-weblink" href={webUrl(node, device)} target="_blank" rel="noopener noreferrer"
-            title={`Open ${webUrl(node, device)} in a new tab`}>Open web page ↗</a>}
+          {web && <a className="nm-weblink" href={web} target="_blank" rel="noopener noreferrer" title={`Open ${web} in a new tab`}>Open web page ↗</a>}
         </div>
         <span className={"pill " + node.status}>{node.status === "ok" ? "Answering" : node.status === "error" ? "Not answering" : unmanaged ? "Not probed" : "Waiting"}</span>
       </div>
-      {node.error && <p className="nm-error">{node.error}</p>}
-      <Roles node={node} onChanged={onChanged} />
-      {!unmanaged && <PauseControl node={node} onChanged={onChanged} />}
-      <dl className="facts">
-        {!unmanaged && <><dt>Host</dt><dd className="mono">{node.host}</dd></>}
-        {node.isRoot && node.wan && node.wan.length > 0 && <><dt>WAN</dt><dd className="mono">{node.wan.map((i) => `${i.name}${i.device ? " (" + i.device + ")" : ""} ${i.ipv4.join(", ")}`).join(" · ")}
-          {node.upstream && node.upstream.length > 0 && <div className="hint">next hop {node.upstream.map((u) => [u.ip, u.hostname].filter(Boolean).join(" · ")).join(", ")}</div>}</dd></>}
-        <dt>Plugged into</dt><dd>{node.isRoot ? `The internet (top of the map${node.rootMarked ? "" : ", picked because it has the WAN"})`
-          : node.realParent ? <>{nameOf(Number(node.realParent.slice(1)))} {node.realPort ? `port ${node.realPort}` : ""}{node.realUplinkPort ? ` ↔ ${node.realUplinkPort}` : ""} <span className="hint">({VIA[node.realVia] || node.realVia}; drawn on the core row because of its role)</span></>
-          : node.parentVia === "role" ? <span className="hint">Not worked out yet; drawn on the core row because of its role</span>
-          : node.parent ? <>{nameOf(Number(node.parent.slice(1)))} {node.parentPort ? `port ${node.parentPort}` : ""}{node.uplinkPort ? ` ↔ ${node.uplinkPort}` : ""} <span className="hint">({node.parentVia === "remembered" ? `not seen right now; last confirmed ${ago(node.parentSeenAt)} from ${VIA[node.parentSeenVia] || node.parentSeenVia}` : VIA[node.parentVia] || node.parentVia})</span></>
-          : <span className="hint">{unmanaged ? ((device && device.mac) ? "Not seen yet: no switch has its MAC in its table" : "Nothing yet: pick it below, or give it a MAC") : "Not worked out yet: no other device sees it in its MAC table"}</span>}</dd>
-        {unmanaged && <><dt>MAC</dt><dd className="mono">{(device && device.mac) || <span className="hint">none: placed only where you put it</span>}</dd></>}
-        {unmanaged && device && device.mac && <><dt>IP</dt><dd>{node.macIp && node.macIp.ip
-          ? <><span className="mono">{node.macIp.ip}</span> <span className="hint">(from {node.macIp.src}{node.macIp.hostname ? `, name ${node.macIp.hostname}` : ""})</span></>
-          : <span className="hint">none recorded for this MAC</span>}</dd></>}
-        {unmanaged && node.notes && <><dt>Notes</dt><dd>{node.notes}</dd></>}
-        {s.hostname && <><dt>Hostname</dt><dd>{s.hostname}</dd></>}
-        {s.release && <><dt>Firmware</dt><dd>{s.release}</dd></>}
-        {s.uptime ? <><dt>Uptime</dt><dd>{fmtUptime(s.uptime)}</dd></> : null}
-        {s.load && s.load.length ? <><dt>Load</dt><dd>{s.load.map((l) => l.toFixed(2)).join(" ")}</dd></> : null}
-        {!unmanaged && <><dt>Last poll</dt><dd>{ago(node.polledAt)}{node.status === "error" && node.lastOkAt ? ` (last good ${ago(node.lastOkAt)})` : ""}</dd></>}
-      </dl>
-      {!node.isRoot && <PluggedIntoEditor devices={devices.filter((d) => d.id !== node.id)} device={drawn ? Number(node.parent.slice(1)) : null} port={drawn ? node.parentPort : ""}
-        autoLabel={unmanaged ? "Nothing" : "Automatic (from the switches)"}
-        onSave={async (dev, port) => { await api.setUplink(node.deviceId, dev, port); onChanged(); }} />}
-      <div className="row" style={{ margin: "10px 0 14px" }}>
-        {!unmanaged && <button className="btn" onClick={poll} disabled={polling}>{polling ? "Polling…" : "Poll now"}</button>}
-        <button className="btn quiet" onClick={() => setEditing(true)}>Edit</button>
-        {node.driver === "openwrt" && <button className="btn quiet" onClick={() => setUpdating(true)}
-          title="Re-run the setup on the device with its admin password: installs netmap's newest read-only helpers">Update on the device</button>}
-        <button className={"btn quiet" + (confirmDel ? " danger" : "")} onClick={async () => {
-          if (!confirmDel) { setConfirmDel(true); return; }
-          await api.deleteDevice(node.deviceId); onSelect(null); onChanged();
-        }}>{confirmDel ? "Click again to remove" : "Remove"}</button>
-      </div>
+      <DetailTabs tabs={tabs} tab={cur} onTab={onTab}>
+        {cur === "status" && <>
+          {node.pausedUntil && <div className="nm-paused"><span>⏸ Polling paused {pausedText(node.pausedUntil)}</span>
+            <button className="btn sm" onClick={async () => { await api.pauseDevice(node.deviceId, 0); onChanged(); }}>Resume</button></div>}
+          {node.error && <p className="nm-error">{node.error}</p>}
+          {!unmanaged && <div className="nm-stats">
+            {ports.length > 0 && <button type="button" onClick={() => onTab("ports")}><b>{linked}/{ports.length}</b><span>ports linked</span></button>}
+            <div><b>{clients}</b><span>clients here</span></div>
+            {node.wifi.length > 0 && <button type="button" onClick={() => onTab("ports")}><b>{wifiClients}</b><span>on Wi-Fi</span></button>}
+            {guests.length > 0 && <button type="button" onClick={() => onTab("vms")}><b>{guests.filter((g) => g.status === "running").length}/{guests.length}</b><span>VMs running</span></button>}
+            {node.poe && node.poe.usedW != null && <button type="button" onClick={() => onTab("power")}><b>{node.poe.usedW} W</b><span>PoE now</span></button>}
+          </div>}
+          <dl className="facts">
+            {!unmanaged && <><dt>Host</dt><dd className="mono">{node.host}</dd></>}
+            {node.isRoot && node.wan && node.wan.length > 0 && <><dt>WAN</dt><dd className="mono">{node.wan.map((i) => `${i.name}${i.device ? " (" + i.device + ")" : ""} ${i.ipv4.join(", ")}`).join(" · ")}
+              {node.upstream && node.upstream.length > 0 && <div className="hint">next hop {node.upstream.map((u) => [u.ip, u.hostname].filter(Boolean).join(" · ")).join(", ")}</div>}</dd></>}
+            <dt>Role</dt><dd>{node.rootMarked ? "Internet gateway" : node.isCore ? "Core switch" : node.isRoot ? "Gateway (has the WAN)" : "Automatic"}</dd>
+            <dt>Plugged into</dt><dd>{pluggedText(node, nameOf, unmanaged, device)}</dd>
+            {unmanaged && <><dt>MAC</dt><dd className="mono">{(device && device.mac) || <span className="hint">none: placed only where you put it</span>}</dd></>}
+            {unmanaged && device && device.mac && <><dt>IP</dt><dd>{node.macIp && node.macIp.ip
+              ? <><span className="mono">{node.macIp.ip}</span> <span className="hint">(from {node.macIp.src}{node.macIp.hostname ? `, name ${node.macIp.hostname}` : ""})</span></>
+              : <span className="hint">none recorded for this MAC</span>}</dd></>}
+            {unmanaged && node.notes && <><dt>Notes</dt><dd>{node.notes}</dd></>}
+            {s.hostname && <><dt>Hostname</dt><dd>{s.hostname}</dd></>}
+            {s.release && <><dt>Firmware</dt><dd>{s.release}</dd></>}
+            {s.uptime ? <><dt>Uptime</dt><dd>{fmtUptime(s.uptime)}</dd></> : null}
+            {s.load && s.load.length ? <><dt>Load</dt><dd>{s.load.map((l) => l.toFixed(2)).join(" ")}</dd></> : null}
+            {!unmanaged && <><dt>Last poll</dt><dd>{ago(node.polledAt)}{node.status === "error" && node.lastOkAt ? ` (last good ${ago(node.lastOkAt)})` : ""}</dd></>}
+          </dl>
+          {failing > 0 && <p className="hint nm-warnline"><button type="button" className="linkish" onClick={() => onTab("checks")}>{failing} check{failing === 1 ? "" : "s"} not working</button>: some details are missing.</p>}
+          {!unmanaged && <div className="row" style={{ marginTop: 12 }}><button className="btn" onClick={poll} disabled={polling}>{polling ? "Polling…" : "Poll now"}</button></div>}
+        </>}
+
+        {cur === "ports" && <>
+          {ports.length > 0 && (<>
+            <h3 className="first">Ports</h3>
+            <table><tbody>{ports.map((p) => (
+              <tr key={p.name}><td className="mono">{p.name}</td><td><span className={"pill " + (p.carrier ? "ok" : "off")}>{p.carrier ? "link" : "no link"}</span></td><td>{p.speed && p.speed !== "-1" ? p.speed : ""}</td><td className={p.alias ? "" : "mono"}>{p.alias || p.bridge || ""}</td>
+              <td className="mono nm-port-rate">{portRateText(p)}{p.poe && p.poe.status === "delivering" ? <span className="nm-poe-port" title={p.poe.mW != null ? `${p.poe.volts} V · ${p.poe.mA} mA; class ${p.poe.cls ?? "?"} (the most it may draw: ${POE_CLASS_W[p.poe.cls] ?? "?"} W)` : "PoE class: the most power the device may draw"}>
+                ⚡ {p.poe.mW != null ? `${(p.poe.mW / 1000).toFixed(1)} W` : `class ${p.poe.cls} (≤${POE_CLASS_W[p.poe.cls] ?? "?"} W)`}</span> : null}</td></tr>
+            ))}</tbody></table>
+          </>)}
+          {node.wifi.length > 0 && (<>
+            <h3>Wi-Fi</h3>
+            <table><tbody>{node.wifi.map((w) => (
+              <tr key={w.iface}><td className="mono">{w.iface}</td><td>{w.ssid}</td><td>{w.channel ? `ch ${w.channel}` : ""}</td><td>{w.clients} client{w.clients === 1 ? "" : "s"}</td></tr>
+            ))}</tbody></table>
+          </>)}
+          {node.interfaces.length > 0 && (<>
+            <h3>Networks</h3>
+            <table><tbody>{node.interfaces.map((i) => (
+              <tr key={i.name}><td>{i.name}</td><td><span className={"pill " + (i.up ? "ok" : "off")}>{i.up ? "up" : "down"}</span></td><td className="mono">{i.ipv4.join(", ") || i.proto}</td><td className="mono">{i.device}</td></tr>
+            ))}</tbody></table>
+          </>)}
+          {node.neighbors.length > 0 && (<>
+            <h3>LLDP neighbours</h3>
+            <table><tbody>{node.neighbors.map((n, i) => (
+              <tr key={i}><td className="mono">{n.localPort}</td><td>{n.sysName || n.chassisId}</td><td className="mono">{n.portDescr || n.portId}</td></tr>
+            ))}</tbody></table>
+          </>)}
+          {!ports.length && !node.wifi.length && !node.interfaces.length && <p className="hint">Nothing reported yet.</p>}
+        </>}
+
+        {cur === "vms" && <>
+          {node.cluster && <p className="hint" style={{ margin: "0 0 6px" }}>Cluster {node.cluster.name}: {node.cluster.nodes.map((n) => n.name + (n.online ? "" : " (offline)")).join(", ")}</p>}
+          <h3 className="first">VMs and containers ({guests.filter((g) => g.status === "running").length} running of {guests.length})</h3>
+          <table><tbody>{guests.map((g) => (
+            <tr key={g.vmid}>
+              <td className="mono">{g.vmid}</td><td>{g.name}</td><td>{g.type === "lxc" ? "CT" : "VM"}</td>
+              <td><span className={"pill " + (g.status === "running" ? "ok" : "off")}>{g.status}</span></td>
+              <td className="mono">{g.nics.map((n) => n.bridge + (n.tag ? "." + n.tag : "")).join(", ")}</td>
+            </tr>
+          ))}</tbody></table>
+        </>}
+
+        {cur === "power" && <PoeSection poe={node.poe} ports={node.ports} />}
+
+        {cur === "checks" && <>
+          <h3 className="first">What this device reports</h3>
+          <Probes probes={node.probes} driver={node.driver} />
+          <dl className="facts" style={{ marginTop: 12 }}>
+            <dt>Last poll</dt><dd>{ago(node.polledAt)}</dd>
+            {node.lastOkAt && <><dt>Last good</dt><dd>{ago(node.lastOkAt)}</dd></>}
+            <dt>Driver</dt><dd>{node.driver}</dd>
+          </dl>
+          <p className="hint" style={{ marginTop: 10 }}>Raw data from the last poll: <a href={`/api/devices/${node.deviceId}/raw`} target="_blank" rel="noopener noreferrer">JSON ↗</a></p>
+          <div className="row" style={{ marginTop: 10 }}><button className="btn quiet" onClick={poll} disabled={polling}>{polling ? "Polling…" : "Poll now"}</button></div>
+        </>}
+
+        {cur === "settings" && <>
+          <h3 className="first">Connection</h3>
+          {device ? <DeviceForm key={device.id} initial={device} onDone={() => { setSaved(true); onChanged(); }} /> : <p className="hint">Loading…</p>}
+          {saved && <p className="hint">Saved and polled.</p>}
+          {node.driver === "openwrt" && <>
+            <button className="btn quiet sm" style={{ marginTop: 8 }} onClick={() => setUpdating(true)}
+              title="Re-run the setup on the device with its admin password: installs netmap's newest read-only helpers">Update helpers on the device…</button>
+          </>}
+
+          <h3>On the map</h3>
+          <Roles node={node} onChanged={onChanged} />
+          {!node.isRoot && <PluggedIntoEditor devices={devices.filter((d) => d.id !== node.id)} device={drawn ? Number(node.parent.slice(1)) : null} port={drawn ? node.parentPort : ""}
+            autoLabel={unmanaged ? "Nothing" : "Automatic (from the switches)"}
+            onSave={async (dev, port) => { await api.setUplink(node.deviceId, dev, port); onChanged(); }} />}
+
+          {!unmanaged && <><h3>Polling</h3><PauseControl node={node} onChanged={onChanged} /></>}
+
+          {!unmanaged && <Collectors node={node} device={device} onChanged={onChanged} />}
+
+          <h3>Remove</h3>
+          <p className="hint" style={{ marginBottom: 6 }}>Takes {node.name} off the map, with its login and history.</p>
+          <button className={"btn quiet" + (confirmDel ? " danger" : "")} onClick={async () => {
+            if (!confirmDel) { setConfirmDel(true); return; }
+            await api.deleteDevice(node.deviceId); onSelect(null); onChanged();
+          }}>{confirmDel ? "Click again to remove" : "Remove device"}</button>
+        </>}
+      </DetailTabs>
 
       {updating && (
         <Modal open onClose={() => setUpdating(false)} title={`Update ${node.name} on the device`}>
@@ -650,80 +782,47 @@ function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices }) {
             onAdded={() => onChanged()} onClose={() => setUpdating(false)} />
         </Modal>
       )}
-      {!unmanaged && <><h3>What this device reports</h3>
-      <Probes probes={node.probes} driver={node.driver} />
-      <Collectors node={node} device={device} onChanged={onChanged} /></>}
-
-      {node.poe && <PoeSection poe={node.poe} ports={node.ports} />}
-      {node.driver === "proxmox" && node.cluster && <p className="hint" style={{ margin: "0 0 6px" }}>Cluster {node.cluster.name}: {node.cluster.nodes.map((n) => n.name + (n.online ? "" : " (offline)")).join(", ")}</p>}
-      {node.guests && node.guests.length > 0 && (<>
-        <h3>VMs and containers ({node.guests.filter((g) => g.status === "running").length} running of {node.guests.length})</h3>
-        <table><tbody>{node.guests.map((g) => (
-          <tr key={g.vmid}>
-            <td className="mono">{g.vmid}</td><td>{g.name}</td><td>{g.type === "lxc" ? "CT" : "VM"}</td>
-            <td><span className={"pill " + (g.status === "running" ? "ok" : "off")}>{g.status}</span></td>
-            <td className="mono">{g.nics.map((n) => n.bridge + (n.tag ? "." + n.tag : "")).join(", ")}</td>
-          </tr>
-        ))}</tbody></table>
-      </>)}
-      {node.interfaces.length > 0 && (<>
-        <h3>Networks</h3>
-        <table><tbody>{node.interfaces.map((i) => (
-          <tr key={i.name}><td>{i.name}</td><td><span className={"pill " + (i.up ? "ok" : "off")}>{i.up ? "up" : "down"}</span></td><td className="mono">{i.ipv4.join(", ") || i.proto}</td><td className="mono">{i.device}</td></tr>
-        ))}</tbody></table>
-      </>)}
-      {ports.length > 0 && (<>
-        <h3>Ports</h3>
-        <table><tbody>{ports.map((p) => (
-          <tr key={p.name}><td className="mono">{p.name}</td><td><span className={"pill " + (p.carrier ? "ok" : "off")}>{p.carrier ? "link" : "no link"}</span></td><td>{p.speed && p.speed !== "-1" ? p.speed : ""}</td><td className={p.alias ? "" : "mono"}>{p.alias || p.bridge || ""}</td>
-          <td className="mono nm-port-rate">{portRateText(p)}{p.poe && p.poe.status === "delivering" ? <span className="nm-poe-port" title={p.poe.mW != null ? `${p.poe.volts} V · ${p.poe.mA} mA; class ${p.poe.cls ?? "?"} (the most it may draw: ${POE_CLASS_W[p.poe.cls] ?? "?"} W)` : "PoE class: the most power the device may draw"}>
-            ⚡ {p.poe.mW != null ? `${(p.poe.mW / 1000).toFixed(1)} W` : `class ${p.poe.cls} (≤${POE_CLASS_W[p.poe.cls] ?? "?"} W)`}</span> : null}</td></tr>
-        ))}</tbody></table>
-      </>)}
-      {node.wifi.length > 0 && (<>
-        <h3>Wi-Fi</h3>
-        <table><tbody>{node.wifi.map((w) => (
-          <tr key={w.iface}><td className="mono">{w.iface}</td><td>{w.ssid}</td><td>{w.channel ? `ch ${w.channel}` : ""}</td><td>{w.clients} client{w.clients === 1 ? "" : "s"}</td></tr>
-        ))}</tbody></table>
-      </>)}
-      {node.neighbors.length > 0 && (<>
-        <h3>LLDP neighbours</h3>
-        <table><tbody>{node.neighbors.map((n, i) => (
-          <tr key={i}><td className="mono">{n.localPort}</td><td>{n.sysName || n.chassisId}</td><td className="mono">{n.portDescr || n.portId}</td></tr>
-        ))}</tbody></table>
-      </>)}
     </>
   );
 }
 
-function ClientDetail({ node, nameOf, onChanged, ouiCount, devices }) {
+function ClientDetail({ node, nameOf, onChanged, ouiCount, devices, tab, onTab }) {
   const [label, setLabel] = useState(node.label || "");
-  useEffect(() => setLabel(node.label || ""), [node.id, node.label]);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => { setLabel(node.label || ""); setSaved(false); }, [node.id, node.label]);
+  const cur = tab === "settings" ? "settings" : "status";
   return (
     <>
       <div className="nm-detail-head"><div><div className="eyebrow">Client · {node.via || "seen"}</div><h2>{node.name}</h2></div></div>
-      <dl className="facts">
-        <dt>MAC</dt><dd className="mono">{node.mac}</dd>
-        <dt>Maker</dt><dd>{node.vendor || (node.randomized ? "Private (randomized) MAC: the device makes it up, so there's no maker to look up" : ouiCount ? "Not in the manufacturer list" : "Manufacturer list not downloaded yet")}</dd>
-        <dt>IP</dt><dd className="mono">{node.ip || "—"}</dd>
-        <dt>Hostname</dt><dd>{node.hostname || "—"}</dd>
-        <dt>First seen</dt><dd>{ago(node.firstSeen)}</dd>
-        <dt>Last seen</dt><dd>{ago(node.lastSeen)}</dd>
-      </dl>
-      <PluggedIntoEditor devices={devices} device={node.placedDevice} port={node.placedPort}
-        onSave={async (dev, port) => { await api.placeClient(node.mac, dev, port); onChanged(); }} />
-      <form className="nm-form" style={{ marginTop: 12 }} onSubmit={async (e) => { e.preventDefault(); await api.labelClient(node.mac, label); onChanged(); }}>
-        <label>Your name for it<input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={node.hostname || "e.g. Living room TV"} /></label>
-        <div className="row"><button className="btn">Save name</button></div>
-      </form>
-      <h3>Seen on</h3>
-      <table><tbody>{node.sightings.map((s, i) => (
-        <tr key={i}>
-          <td>{nameOf(s.deviceId)}</td><td>{s.via}</td><td className="mono">{s.iface}</td>
-          <td>{s.detail && s.detail.signal != null ? `${s.detail.signal} dBm` : ""}{s.detail && s.detail.ssid ? ` · ${s.detail.ssid}` : ""}
-            {s.via === "vm" && s.detail ? `${s.detail.type === "lxc" ? "CT" : "VM"} ${s.detail.vmid} · ${s.detail.nic}` : ""}</td>
-        </tr>
-      ))}</tbody></table>
+      <DetailTabs tabs={[{ id: "status", label: "Status" }, { id: "settings", label: "Settings" }]} tab={cur} onTab={onTab}>
+        {cur === "status" ? <>
+          <dl className="facts">
+            <dt>MAC</dt><dd className="mono">{node.mac}</dd>
+            <dt>Maker</dt><dd>{node.vendor || (node.randomized ? "Private (randomized) MAC: the device makes it up, so there's no maker to look up" : ouiCount ? "Not in the manufacturer list" : "Manufacturer list not downloaded yet")}</dd>
+            <dt>IP</dt><dd className="mono">{node.ip || "—"}</dd>
+            <dt>Hostname</dt><dd>{node.hostname || "—"}</dd>
+            <dt>First seen</dt><dd>{ago(node.firstSeen)}</dd>
+            <dt>Last seen</dt><dd>{ago(node.lastSeen)}</dd>
+          </dl>
+          <h3>Seen on</h3>
+          <table><tbody>{node.sightings.map((s, i) => (
+            <tr key={i}>
+              <td>{nameOf(s.deviceId)}</td><td>{s.via}</td><td className="mono">{s.iface}</td>
+              <td>{s.detail && s.detail.signal != null ? `${s.detail.signal} dBm` : ""}{s.detail && s.detail.ssid ? ` · ${s.detail.ssid}` : ""}
+                {s.via === "vm" && s.detail ? `${s.detail.type === "lxc" ? "CT" : "VM"} ${s.detail.vmid} · ${s.detail.nic}` : ""}</td>
+            </tr>
+          ))}</tbody></table>
+        </> : <>
+          <h3 className="first">Name</h3>
+          <form className="nm-form" onSubmit={async (e) => { e.preventDefault(); await api.labelClient(node.mac, label); setSaved(true); onChanged(); }}>
+            <label>Your name for it<input value={label} onChange={(e) => { setLabel(e.target.value); setSaved(false); }} placeholder={node.hostname || "e.g. Living room TV"} /></label>
+            <div className="row"><button className="btn">Save name</button>{saved && <span className="hint">Saved.</span>}</div>
+          </form>
+          <h3>Plugged into</h3>
+          <PluggedIntoEditor devices={devices} device={node.placedDevice} port={node.placedPort}
+            onSave={async (dev, port) => { await api.placeClient(node.mac, dev, port); onChanged(); }} />
+        </>}
+      </DetailTabs>
     </>
   );
 }
@@ -784,6 +883,9 @@ export default function App() {
   useEffect(() => { refresh(); const t = setInterval(refresh, 15000); return () => clearInterval(t); }, [refresh]);
   useEffect(() => { try { localStorage.setItem("nm-clients", showClients ? "1" : "0"); } catch (e) {} }, [showClients]);
   const [sideTab, setSideTab] = useState("overview");
+  // the vertical tab in the details panel; kept while clicking from device to device
+  const [detailTab, setDetailTab] = useState(() => stored("nm-detail-tab", "status"));
+  useEffect(() => store("nm-detail-tab", detailTab), [detailTab]);
   const [collapsed, setCollapsed] = useState(() => stored("nm-side-collapsed", false));
   const [sideW, setSideW] = useState(() => stored("nm-side-width", 340));
   useEffect(() => store("nm-side-collapsed", collapsed), [collapsed]);
@@ -806,6 +908,7 @@ export default function App() {
   const nameOf = useMemo(() => (id) => (devices.find((d) => d.id === id) || {}).name || `device ${id}`, [devices]);
   const devNodes = graph ? graph.nodes.filter((n) => n.kind === "device") : [];
   const clientCount = graph ? graph.nodes.filter((n) => n.kind === "client").length : 0;
+  const clientsOf = (id) => (graph ? graph.edges.filter((e) => e.source === id && e.target.startsWith("c")).length : 0);
 
   return (
     <div className="nm-app" style={{ gridTemplateColumns: collapsed ? "32px minmax(0, 1fr)" : `${sideW}px minmax(0, 1fr)` }}>
@@ -840,8 +943,9 @@ export default function App() {
               : (
                 <section className="nm-detail">
                   {node.kind === "device"
-                    ? <DeviceDetail node={node} device={devices.find((d) => d.id === node.deviceId)} onChanged={refresh} onSelect={setSelected} nameOf={nameOf} devices={devNodes} />
-                    : <ClientDetail node={node} nameOf={nameOf} onChanged={refresh} ouiCount={graph.oui ? graph.oui.count : 0} devices={devNodes} />}
+                    ? <DeviceDetail node={node} device={devices.find((d) => d.id === node.deviceId)} onChanged={refresh} onSelect={setSelected} nameOf={nameOf} devices={devNodes}
+                        clients={clientsOf(node.id)} tab={detailTab} onTab={setDetailTab} />
+                    : <ClientDetail node={node} nameOf={nameOf} onChanged={refresh} ouiCount={graph.oui ? graph.oui.count : 0} devices={devNodes} tab={detailTab} onTab={setDetailTab} />}
                 </section>
               )}
           </aside>
