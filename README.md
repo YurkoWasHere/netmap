@@ -13,14 +13,63 @@ Supported devices:
 | **TP-Link Easy Smart** switches (TL-SG105E/108E/116E …) | their web pages | ports, speeds, packet counters (MAC table only with patched firmware, see below) |
 | **D-Link Easy Smart** switches (DGS-1100 series) | their web pages (admin password; no SNMP on these) | ports, speeds, packet counters, MAC table, PoE total and per-port watts/volts/mA/class |
 | **2.5G web-managed switches** (SL-SWTGW218AS and the same Realtek firmware as Sodola, Keeplink, Horaco …) | their web pages (admin login; no SNMP) | ports, speeds (2.5G/10G), packet counters, MAC table |
-| **Proxmox VE** nodes | the API, with a read-only `user@pve` account | VMs and containers, their NICs and bridges |
+| **Proxmox VE** nodes | the API, with a read-only `user@pve` (or `user@pam`) account | VMs and containers, their NICs and bridges |
+| **UniFi** APs and switches | the UniFi Network controller's API, with a local View Only account | ports, PoE, Wi-Fi clients by SSID, wired clients by port, cabling between UniFi devices |
 | **Netgear smart switches** (S350 …) | web UI, as an extra data source next to SNMP | per-port PoE watts, volts, mA and class |
 | **Ubiquiti EdgeRouter** (EdgeOS) | SNMP, plus its web UI (read-only) and a locked-down SSH key as extra data sources | ports, traffic, ARP; DHCP client names; MAC table per jack ([setup](docs/edgeos-setup.md)) |
 | **Unmanaged switches** | never polled | drawn where you say, or where their MAC is seen |
 
 Drivers live in `server/drivers/`, extra data sources (collectors) in `server/collectors/`.
 
-## Install
+## Install with Docker
+
+The easiest way to run it. You need Docker with the Compose plugin (`docker compose version` should work).
+
+```sh
+git clone https://github.com/YurkoWasHere/netmap.git && cd netmap
+docker compose up -d --build               # then open http://localhost:8090
+```
+
+This builds the web app and server into one image and starts it in the background. It restarts on its own
+unless you stop it. Everything netmap stores (devices, their logins, poll history, the map layout) goes in
+the `netmap-data` Docker volume, so it survives rebuilds and upgrades.
+
+**Opening it from other machines.** By default the port is published on `127.0.0.1` only, because netmap has
+no login (see [Security](#security)). To let the rest of your network in, create a `.env` file next to
+`compose.yaml`:
+
+```sh
+NETMAP_BIND=0.0.0.0     # which host address to publish on (default 127.0.0.1)
+NETMAP_PORT=8090        # host port (default 8090)
+POLL_SECONDS=60         # how often devices are polled
+TZ=Europe/Kyiv          # timezone for the logs
+```
+
+and run `docker compose up -d` again. `.env` is gitignored.
+
+The container only makes outgoing connections to your devices (HTTP/HTTPS, SNMP over UDP 161, SSH). The
+default bridge network can do all of that, so it doesn't need host networking.
+
+Day to day:
+
+```sh
+docker compose logs -f                     # watch polling and errors
+git pull && docker compose up -d --build   # update to the latest version
+docker compose down                        # stop it (the data volume is kept)
+```
+
+**Backing up the database.** netmap uses SQLite in WAL mode, so stop it first to get a consistent copy:
+
+```sh
+docker compose stop
+docker run --rm -v netmap_netmap-data:/data -v "$PWD":/backup busybox tar czf /backup/netmap-data.tgz -C /data .
+docker compose start
+```
+
+The volume name has your Compose project name in front of it (the folder name, `netmap`, by default). Run
+`docker volume ls` to check it. The backup has device logins in it, so keep it private.
+
+## Install without Docker
 
 Needs Linux (or macOS) with **Node.js 22.13 or newer** (it uses the built-in `node:sqlite`, so there are no
 native modules to compile). If your distribution's Node is older, the installer can fetch a private copy.
@@ -92,10 +141,23 @@ Switches running a **custom, patched firmware** get `MacTableRpm.htm` and `/MacT
 (not a TP-Link feature): see [TL-SG108E-V5-custom-firmware](https://github.com/YurkoWasHere/TL-SG108E-V5-custom-firmware) (TL-SG108E v5 only). The driver checks for it on every poll and only then reads the table (front
 socket = ASIC port + 1, checked on a TL-SG108E v5); on any other switch it carries on without it.
 
+## Adding a UniFi AP or switch
+
+UniFi devices are read through the controller, not one by one. **Add device → UniFi AP or switch**: the
+controller's address (a self-hosted UniFi Network answers on **8443**; a UniFi OS console such as a UDM or Cloud
+Key Gen2 on **443**), a **local** controller account (not a UI.com login, no two-factor; the **View Only** role is
+enough), **Look up devices**, pick one. Add the others the same way; they share one login and one read of the
+controller.
+
+netmap reads the controller's device list (ports, link speeds, traffic, PoE, SSIDs, which UniFi device uplinks to
+which port) and its client list (Wi-Fi clients on the AP and SSID they're on, with signal; wired clients on the
+switch port the controller last saw them on). It only makes GET requests after logging in.
+
 ## Adding a Proxmox VE node
 
 Each node of a cluster is its own device, so its VMs and containers hang off the right node. **Add device →
-Proxmox VE node**: the IP of any node, a **PVE-realm** account (`user@pve`, not PAM), **Look up nodes**, pick the
+Proxmox VE node**: the IP of any node, a **PVE-realm** account (`user@pve`) or a **PAM** one
+(`user@pam`, a Linux user on the node; a bare name means `@pve`), **Look up nodes**, pick the
 node. Add the other nodes the same way; they share one login and one read of the cluster.
 
 A read-only account, on any node:
@@ -103,6 +165,13 @@ A read-only account, on any node:
 ```sh
 pveum user add monitor@pve --password 'a-long-password'
 pveum acl modify / --users monitor@pve --roles PVEAuditor
+```
+
+Or an existing Linux user on the nodes, through PAM (it must exist on every node you add):
+
+```sh
+pveum user add monitor@pam
+pveum acl modify / --users monitor@pam --roles PVEAuditor
 ```
 
 netmap reads the cluster's nodes and guests, each guest's config (for its NICs' MACs and bridges), and the node's
@@ -178,7 +247,7 @@ powered devices, not the switch's own use. Ports that report watts show them on 
 
 - `server/server.js`: HTTP API, static files and the poll loop. The API is listed at the top of the file.
 - `server/db.js`: the SQLite schema (devices, collectors, polls, clients, sightings, names, links, uplinks, oui).
-- `server/drivers/`: `openwrt.js`, `snmp.js`, `tplink.js`, `dlink.js`, `realtek.js`, `proxmox.js`. Each returns the same normalised shape.
+- `server/drivers/`: `openwrt.js`, `snmp.js`, `tplink.js`, `dlink.js`, `realtek.js`, `proxmox.js`, `unifi.js`. Each returns the same normalised shape.
 - `server/collectors/`: extra data sources (`netgear-web.js`, `edgeos-web.js`, `edgeos-ssh.js`); `index.js` merges their results.
 - `server/setup.js`: automatic OpenWrt setup with the root login, over SSH (`ssh2`) or ubus.
 - `server/graph.js`: turns stored polls into map nodes and edges.
@@ -188,3 +257,8 @@ powered devices, not the switch's own use. Ports that report watts show them on 
 - `web/src/App.jsx`, `Faceplate.jsx`: the page around it (device list, forms, details panel) and device front panels.
 - `docs/openwrt-setup.sh` / `.md`: what an OpenWrt device needs, and the script that sets it up.
 - `scripts/install.sh`, `deploy/netmap.service`: installer and systemd unit.
+- `Dockerfile`, `compose.yaml`: container image and Compose setup (see [Install with Docker](#install-with-docker)).
+
+## License
+
+Copyright 2026 Yurko. Licensed under the [Apache License, Version 2.0](LICENSE).

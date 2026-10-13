@@ -2,6 +2,7 @@
   "name": "netmap-server",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "description": "Polls network devices into SQLite and serves a network graph API",
   "main": "server.js",
   "engines": {

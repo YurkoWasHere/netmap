@@ -2,6 +2,7 @@
   "name": "netmap",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "description": "Live network map: polls OpenWrt, SNMP, TP-Link, Netgear and Proxmox devices into SQLite and draws them with React Flow",
   "engines": {
     "node": ">=22.13"

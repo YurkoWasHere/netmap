@@ -1,0 +1,15 @@
+.git
+**/node_modules
+/node/
+web/dist
+server/*.db
+server/*.db-*
+server/netmap.db*
+server/config.json
+server/*.tmp
+instances/
+.env
+*.swp
+.DS_Store
+.vscode/
+.idea/

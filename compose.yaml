@@ -1,0 +1,19 @@
+# docker compose up -d   then open http://localhost:8090
+services:
+  netmap:
+    build: .
+    image: netmap:latest
+    container_name: netmap
+    restart: unless-stopped
+    ports:
+      # netmap has no login: by default only this machine can open it. Set NETMAP_BIND=0.0.0.0 (e.g. in .env)
+      # to let the rest of your network in, or put it behind a reverse proxy with authentication.
+      - "${NETMAP_BIND:-127.0.0.1}:${NETMAP_PORT:-8090}:8090"
+    environment:
+      POLL_SECONDS: ${POLL_SECONDS:-60}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - netmap-data:/data
+
+volumes:
+  netmap-data:

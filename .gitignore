@@ -18,3 +18,4 @@ web/dist/
 /instances/*
 !/instances/README.md
 !/instances/example/
+.env
