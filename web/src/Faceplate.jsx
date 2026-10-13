@@ -10,7 +10,7 @@ const SFP = /^(sfp|s\d|xg|te|tw|fiber)/i;
 function panelPorts(d) {
   const ports = d.ports || [];
   const natural = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true });
-  if (d.driver === "snmp" || d.driver === "tplink" || d.driver === "dlink" || d.driver === "realtek") return ports.filter((p) => p.type === "port" || !p.type).sort((a, b) => (a.ifIndex || 0) - (b.ifIndex || 0) || natural(a, b));
+  if (d.driver === "snmp" || d.driver === "tplink" || d.driver === "dlink" || d.driver === "realtek" || d.driver === "unifi") return ports.filter((p) => p.type === "port" || !p.type).sort((a, b) => (a.ifIndex || 0) - (b.ifIndex || 0) || natural(a, b));
   if (d.driver === "proxmox") return ports.filter((p) => p.type === "eth").sort(natural);
   if (d.driver === "openwrt") {
     // DSA ports (lan1..lan4, wan) if the router has them, else the plain ethernet devices; never VLANs or bridges

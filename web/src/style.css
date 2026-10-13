@@ -202,6 +202,7 @@ code { font-family: var(--font-mono); font-size: .9em; }
 .nm-edge.wan path.react-flow__edge-path { stroke: var(--fg); stroke-width: 3; }
 .react-flow__minimap .mm-internet { fill: var(--fg); }
 .nm-role-pick { display: grid; gap: 3px; font-size: .74rem; color: var(--muted); margin: 0 0 12px; }
+.nm-hidden-ports { display: flex; flex-wrap: wrap; gap: 2px 12px; color: var(--fg); font-size: .82rem; }
 .nm-role-pick select { font: inherit; font-size: .88rem; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; }
 .nm-role-pick select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .nm-legend .ln.wan { border-top: 3px solid var(--fg); }
@@ -246,13 +247,13 @@ code { font-family: var(--font-mono); font-size: .9em; }
 :root { --flow-down: #1c7ed6; --flow-up: #e8590c; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --flow-down: #4dabf7; --flow-up: #ff922b; } }
 :root[data-theme="dark"] { --flow-down: #4dabf7; --flow-up: #ff922b; }
-.nm-flow { --dot: 4px; fill: none; stroke-linecap: round; stroke-dasharray: 0.1 18; stroke-width: var(--dot); pointer-events: none;
+.nm-flow { --dot: 4px; fill: none; stroke-linecap: round; stroke-dasharray: 0.1 28; opacity: .75; stroke-width: var(--dot); pointer-events: none;
   animation: nm-flow 2s linear infinite; }
-.nm-flow.halo { stroke: var(--bg); stroke-width: calc(var(--dot) + 4px); }
+.nm-flow.halo { display: none; } /* see-through dots: the line's speed colour shows between and under them */
 .nm-flow.down:not(.halo) { stroke: var(--flow-down); }
 .nm-flow.up:not(.halo) { stroke: var(--flow-up); }
-.nm-flow.up { animation-direction: reverse; stroke-dashoffset: 9; }
-@keyframes nm-flow { to { stroke-dashoffset: -18.1; } }
+.nm-flow.up { animation-direction: reverse; stroke-dashoffset: 14; }
+@keyframes nm-flow { to { stroke-dashoffset: -28.1; } }
 @media (prefers-reduced-motion: reduce) { .nm-flow { animation: none; } }
 .nm-port { flex-wrap: wrap; row-gap: 0; }
 .nm-port .rate { flex-basis: 100%; font-size: 9.5px; color: var(--muted); letter-spacing: -.01em; }
@@ -388,3 +389,39 @@ code { font-family: var(--font-mono); font-size: .9em; }
 .nm-detail tr.nowrap td { white-space: nowrap; }
 .nm-setup-cmds { margin: 8px 0 10px; display: grid; gap: 6px; }
 .nm-setup-cmds pre { max-height: 320px; font-size: .68rem; }
+
+/* VLAN tags: one hue per VLAN (set inline as --vl) */
+.nm-vlan { flex: none; margin-left: auto; font-size: 9.5px; font-weight: 600; line-height: 1; padding: 2px 5px; border-radius: 8px; white-space: nowrap;
+  color: hsl(var(--vl) 65% 30%); background: hsl(var(--vl) 75% 50% / .16); border: 1px solid hsl(var(--vl) 60% 45% / .45); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .nm-vlan { color: hsl(var(--vl) 85% 75%); background: hsl(var(--vl) 60% 50% / .2); } }
+:root[data-theme="dark"] .nm-vlan { color: hsl(var(--vl) 85% 75%); background: hsl(var(--vl) 60% 50% / .2); }
+dd .nm-vlan, .nm-legend .nm-vlan { margin: 0 6px 0 0; display: inline-block; }
+.nm-client.is-dim { opacity: .22; }
+.nm-vlan-pick { display: inline-flex; align-items: center; gap: 6px; font-size: .85rem; color: var(--muted); }
+.nm-vlan-pick select { width: auto; max-width: 320px; flex: none; font: inherit; font-size: .82rem; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
+
+/* Link speed: wired lines and port pills coloured by the port's speed (grey: unknown). Last in the file so it
+   wins over the line-type colours above; thickness still tells cables between devices from client lines. */
+:root { --spd-10m: #e03131; --spd-100m: #e8590c; --spd-1g: #2f9e44; --spd-2g5: #1c7ed6; --spd-5g: #7048e8; --spd-10g: #c2255c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --spd-10m: #ff6b6b; --spd-100m: #ff922b; --spd-1g: #51cf66; --spd-2g5: #4dabf7; --spd-5g: #9775fa; --spd-10g: #f06595; } }
+:root[data-theme="dark"] { --spd-10m: #ff6b6b; --spd-100m: #ff922b; --spd-1g: #51cf66; --spd-2g5: #4dabf7; --spd-5g: #9775fa; --spd-10g: #f06595; }
+.nm-edge.infra path.react-flow__edge-path, .nm-edge.port-link.trunk path.react-flow__edge-path { stroke: var(--wired); }
+.nm-spd-seg { fill: none; stroke-width: 1.5; pointer-events: none; }
+.nm-edge.infra .nm-spd-seg, .nm-edge.trunk .nm-spd-seg { stroke-width: 3; }
+.nm-edge.selected .nm-spd-seg { stroke-width: 4; }
+.nm-edge.kind-manual .nm-spd-seg { stroke-dasharray: 8 4; }
+.nm-edge.kind-remembered .nm-spd-seg { stroke-dasharray: 2 5; }
+/* a device's drop to its own port is always solid: "set by hand" / "remembered" dashes belong on the line below the port */
+.nm-edge.port-link:not(.kind-wifi) path.react-flow__edge-path, .nm-edge.port-link .nm-spd-seg { stroke-dasharray: none; }
+.nm-legend .ln.dashed { border-top: 2px dashed var(--wired); }
+.nm-edge.spd-10m .nm-spd-seg, .spd-txt.spd-10m, .nm-legend .ln.spd-10m { stroke: var(--spd-10m); color: var(--spd-10m); border-top-color: var(--spd-10m); }
+.nm-edge.spd-100m .nm-spd-seg, .spd-txt.spd-100m, .nm-legend .ln.spd-100m { stroke: var(--spd-100m); color: var(--spd-100m); border-top-color: var(--spd-100m); }
+.nm-edge.spd-1g .nm-spd-seg, .spd-txt.spd-1g, .nm-legend .ln.spd-1g { stroke: var(--spd-1g); color: var(--spd-1g); border-top-color: var(--spd-1g); }
+.nm-edge.spd-2g5 .nm-spd-seg, .spd-txt.spd-2g5, .nm-legend .ln.spd-2g5 { stroke: var(--spd-2g5); color: var(--spd-2g5); border-top-color: var(--spd-2g5); }
+.nm-edge.spd-5g .nm-spd-seg, .spd-txt.spd-5g, .nm-legend .ln.spd-5g { stroke: var(--spd-5g); color: var(--spd-5g); border-top-color: var(--spd-5g); }
+.nm-edge.spd-10g .nm-spd-seg, .spd-txt.spd-10g, .nm-legend .ln.spd-10g { stroke: var(--spd-10g); color: var(--spd-10g); border-top-color: var(--spd-10g); }
+.nm-port .spd-txt { font-size: 10px; font-weight: 700; margin-left: auto; }
+.nm-legend .ln.thick { border-top-color: var(--wired); border-top-width: 3px; }
+.nm-legend .ln.thin { border-top-color: var(--wired); border-top-width: 1.5px; }
+.nm-legend .ln.spd { width: 12px; margin-right: 3px; }
+.nm-legend .spd-scale { display: inline-flex; align-items: center; gap: 2px 8px; flex-wrap: wrap; }

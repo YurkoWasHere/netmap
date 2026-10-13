@@ -108,6 +108,8 @@ const ADDED_COLUMNS = [
   ["devices", "is_root", "integer not null default 0"],
   // the gateway's WAN jack when netmap can't tell (e.g. SNMP sees pppoe0 but not that it runs on eth5); '' = automatic
   ["devices", "wan_port", "text not null default ''"],
+  // ports left off the map and faceplate (e.g. itf0), comma-separated; their clients still show
+  ["devices", "hidden_ports", "text not null default ''"],
   ["devices", "is_core", "integer not null default 0"],
   // optional MAC of an unmanaged switch: lets the MAC tables place it automatically
   ["devices", "mac", "text not null default ''"],

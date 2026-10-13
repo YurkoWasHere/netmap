@@ -33,6 +33,7 @@ export const Icon = memo(function Icon({ name, size = 18, className }) {
 // What kind of box a managed device is.
 export function deviceIcon(d) {
   if (d.driver === "proxmox") return "server";
+  if (d.driver === "unifi") { const k = (d.system || {}).kind; return k === "ap" ? "ap" : k === "gateway" ? "router" : "switch"; }
   if (d.driver === "none") return "switch-plain";
   if (d.driver === "snmp" || d.driver === "tplink" || d.driver === "dlink" || d.driver === "realtek") return "switch";
   // OpenWrt: the gateway and anything with a WAN is a router; a box that only serves Wi-Fi is an access point

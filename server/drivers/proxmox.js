@@ -1,5 +1,5 @@
-// Proxmox VE driver: one netmap device per cluster node. Logs in with a PVE-realm account (user@pve, e.g. with
-// the PVEAuditor role: read-only) and only makes GET requests after that.
+// Proxmox VE driver: one netmap device per cluster node. Logs in with a PVE- or PAM-realm account (user@pve or
+// user@pam, e.g. with the PVEAuditor role: read-only) and only makes GET requests after that.
 // The device row: host/port = any node's API (default 8006, HTTPS), username/password, node = which node this
 // device is. Cluster-wide reads are shared between the node devices of one cluster for a short while.
 //
@@ -18,7 +18,7 @@ const tickets = new Map();  // host|port|user -> { ticket, at }
 const shared = new Map();   // host|port|user|route -> { at, data }
 const configs = new Map();  // host|node|type|vmid -> { at, data }
 
-// "monitor" -> "monitor@pve": netmap logs in through the PVE realm, not PAM.
+// "monitor" -> "monitor@pve": a bare name is taken as PVE-realm; "monitor@pam" logs in through PAM.
 const realmUser = (u) => (String(u || "").includes("@") ? String(u) : `${u}@pve`);
 
 function request(dev, method, route, { body, ticket } = {}) {
@@ -36,7 +36,7 @@ function request(dev, method, route, { body, ticket } = {}) {
       let buf = "";
       res.on("data", (c) => (buf += c));
       res.on("end", () => {
-        if (res.statusCode === 401) return reject(new Error("login failed: wrong user or password (the account must be in the PVE realm, e.g. monitor@pve)"));
+        if (res.statusCode === 401) return reject(new Error("login failed: wrong user or password (include the realm: monitor@pve or monitor@pam)"));
         if (res.statusCode === 403) return reject(new Error(`${route}: permission denied (give the account the PVEAuditor role on /)`));
         if (res.statusCode !== 200) return reject(new Error(`${route} returned HTTP ${res.statusCode}${buf ? ": " + buf.slice(0, 120).trim() : ""}`));
         try { resolve(JSON.parse(buf).data); } catch (e) { reject(new Error(`${route}: bad JSON`)); }
@@ -50,7 +50,6 @@ function request(dev, method, route, { body, ticket } = {}) {
 
 async function session(dev) {
   const user = realmUser(dev.username);
-  if (/@pam$/i.test(user)) throw new Error("use a PVE-realm account (user@pve), not a PAM one");
   const key = `${dev.host}|${dev.port || 8006}|${user}`;
   const t = tickets.get(key);
   let ticket = t && Date.now() - t.at < TICKET_MS ? t.ticket : null;
@@ -74,7 +73,7 @@ async function session(dev) {
   return { get, getShared, key };
 }
 
-// "virtio=BC:24:11:69:BD:5E,bridge=vmbr0,tag=500,firewall=1" (VM) or
+// "virtio=BC:24:11:00:00:02,bridge=vmbr0,tag=500,firewall=1" (VM) or
 // "name=eth0,bridge=vmbr0,hwaddr=BC:24:11:00:00:01,ip=192.168.1.38/24,type=veth" (container)
 function parseNic(s) {
   const kv = Object.fromEntries(String(s).split(",").map((p) => { const i = p.indexOf("="); return i < 0 ? [p, ""] : [p.slice(0, i), p.slice(i + 1)]; }));

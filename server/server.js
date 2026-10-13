@@ -4,16 +4,18 @@
 //   GET    /api/devices                  managed devices (never includes passwords)
 //   POST   /api/devices                  add { name, host, port?, https?, verify_tls?, username, password, driver?,
 //                                        plugged_into?, plugged_port?, mac?, node? }; driver "none" = unmanaged, never
-//                                        polled; driver "proxmox" needs node (which cluster node) and a user@pve login
+//                                        polled; driver "proxmox" needs node (which cluster node) and a user@pve or user@pam login
+//                                        driver "unifi": host/port = the controller, node = "<site>/<device MAC>"
 //   PATCH  /api/devices/:id              change any of the above, or { enabled }, { notes }
 //   DELETE /api/devices/:id
 //   POST   /api/devices/:id/poll         poll now, returns the result or the error (works while paused too)
 //   POST   /api/devices/:id/pause        { minutes } pause polling for that long; -1 until resumed; 0 resumes
 //   PUT    /api/devices/:id/uplink       { device, port } what it's plugged into (a drawn cable); { device: null } = automatic
 //   POST   /api/proxmox/nodes            { host, port?, username, password } -> { cluster, nodes: [{ name, ip, online }] }
+//   POST   /api/unifi/devices            { host, port?, username, password } -> { version, devices: [{ node, name, model, type, ip, online }] }
 //   POST   /api/setup                    { name, host, port?, https?, root_user?, root_password, device_id? } sets up an OpenWrt
-//                                        device (device_id: re-run it for a device already on the map), then
-//                                        device with the root login, then adds it; returns a job to watch
+//                                        device with the root login, then adds it (device_id: re-run it for a device
+//                                        already on the map); returns a job to watch
 //   GET    /api/setup/:job               { state: running|done|error, log, deviceId }
 //   GET    /api/devices/:id/collectors   the device's extra data sources (no passwords)
 //   POST   /api/devices/:id/collectors   { kind, host?, port?, https?, verify_tls?, username, password } adds one
@@ -36,7 +38,7 @@ const { open, all, plain } = require("./db.js");
 const { build } = require("./graph.js");
 const drivers = { openwrt: require("./drivers/openwrt.js"), snmp: require("./drivers/snmp.js"), proxmox: require("./drivers/proxmox.js"),
   tplink: require("./drivers/tplink.js"), dlink: require("./drivers/dlink.js"),
-  realtek: require("./drivers/realtek.js") };
+  realtek: require("./drivers/realtek.js"), unifi: require("./drivers/unifi.js") };
 // Devices nobody can ask anything (a dumb switch): on the map, never polled.
 const UNMANAGED = "none";
 const setup = require("./setup.js");
@@ -58,8 +60,8 @@ const WEB = path.resolve(__dirname, "..", "web", "dist");
 const db = open(DB_PATH);
 oui.load(db);
 energy.init(db);
-const PUBLIC_COLS = "id, name, driver, host, port, https, verify_tls, username, enabled, notes, is_root, is_core, mac, node, wan_port, paused_until, created_at, (password != '') as has_password";
-const EDITABLE = ["name", "driver", "host", "port", "https", "verify_tls", "username", "password", "enabled", "notes", "is_root", "is_core", "mac", "node", "wan_port"];
+const PUBLIC_COLS = "id, name, driver, host, port, https, verify_tls, username, enabled, notes, is_root, is_core, mac, node, wan_port, hidden_ports, paused_until, created_at, (password != '') as has_password";
+const EDITABLE = ["name", "driver", "host", "port", "https", "verify_tls", "username", "password", "enabled", "notes", "is_root", "is_core", "mac", "node", "wan_port", "hidden_ports"];
 
 // ---------- polling ----------
 const busy = new Set();
@@ -194,11 +196,13 @@ function cleanDevice(b, partial, existingDriver) {
   for (const k of ["https", "verify_tls", "enabled", "is_root", "is_core"]) if (k in out) out[k] = out[k] ? 1 : 0;
   if ("port" in out) out.port = out.port ? Number(out.port) : null;
   for (const k of ["name", "host", "username", "notes", "driver", "node", "wan_port"]) if (k in out) out[k] = String(out[k] ?? "").trim();
+  if ("hidden_ports" in out) out.hidden_ports = [...new Set((Array.isArray(out.hidden_ports) ? out.hidden_ports : String(out.hidden_ports ?? "").split(","))
+    .map((p) => String(p).trim()).filter(Boolean))].join(",");
   if ((out.driver || existingDriver) === "proxmox") {
     if (out.username) out.username = drivers.proxmox.realmUser(out.username);
-    if (out.username && /@pam$/i.test(out.username)) throw new Error("use a PVE-realm account (user@pve), not a PAM one");
     if (!partial && !out.node) throw new Error("pick which Proxmox node this device is");
   }
+  if ((out.driver || existingDriver) === "unifi" && !partial && !out.node) throw new Error("pick which UniFi device this is");
   if ("mac" in out) {
     const hex = String(out.mac || "").replace(/[^0-9a-fA-F]/g, "").toLowerCase();
     if (hex && hex.length !== 12) throw new Error("that MAC address doesn't look right (12 hex digits, e.g. 00:11:22:33:44:55)");
@@ -244,6 +248,12 @@ async function api(req, res, url) {
     const b = await readBody(req);
     if (!b.host || !b.username || !b.password) throw new Error("host, user and password are needed to look up the nodes");
     return send(res, 200, await drivers.proxmox.listNodes({ host: String(b.host).trim(), port: b.port ? Number(b.port) : 8006, username: b.username, password: b.password, verify_tls: !!b.verify_tls }));
+  }
+  if (url.pathname === "/api/unifi/devices" && method === "POST") {
+    // Log in to the controller and list its devices on every site, for the add form.
+    const b = await readBody(req);
+    if (!b.host || !b.username || !b.password) throw new Error("host, user and password are needed to look up the devices");
+    return send(res, 200, await drivers.unifi.listDevices({ host: String(b.host).trim(), port: b.port ? Number(b.port) : 8443, username: String(b.username).trim(), password: b.password, verify_tls: !!b.verify_tls }));
   }
   if (url.pathname === "/api/setup" && method === "POST") return send(res, 202, setup.start(await readBody(req), addDevice, updateLogin));
   if ((r = m(/^\/api\/setup\/([0-9a-f-]+)$/)) && method === "GET") {

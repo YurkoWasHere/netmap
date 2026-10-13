@@ -18,6 +18,7 @@ export function makeApi(base = "") {
     deleteDevice: (id) => req("DELETE", `/api/devices/${id}`),
     startSetup: (d) => req("POST", "/api/setup", d),
     proxmoxNodes: (d) => req("POST", "/api/proxmox/nodes", d),
+    unifiDevices: (d) => req("POST", "/api/unifi/devices", d),
     setupStatus: (id) => req("GET", `/api/setup/${id}`),
     pollDevice: (id) => req("POST", `/api/devices/${id}/poll`),
     pauseDevice: (id, minutes) => req("POST", `/api/devices/${id}/pause`, { minutes }),

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { makeApi } from "./api.js";
-import NetworkMap from "./NetworkMap.jsx";
+import NetworkMap, { VlanTag, SPEEDS } from "./NetworkMap.jsx";
 import { Icon, deviceIcon } from "./icons.jsx";
 
 const api = makeApi("");
@@ -28,7 +28,7 @@ const SNMP_PROBES = {
   poe: ["PoE power", "POWER-ETHERNET-MIB (PoE switches only)"]
 };
 const PROXMOX_PROBES = {
-  cluster: ["Cluster and node list", "a PVE-realm login (user@pve) that can read /cluster"],
+  cluster: ["Cluster and node list", "a login (user@pve or user@pam) that can read /cluster"],
   node: ["Node status", "Sys.Audit on the node (the PVEAuditor role on / covers it)"],
   network: ["Bridges and interfaces", "Sys.Audit on the node"],
   guests: ["VMs and containers (MACs, bridges)", "VM.Audit (the PVEAuditor role on / covers it)"]
@@ -53,7 +53,14 @@ const REALTEK_PROBES = {
   traffic: ["Traffic (packet counters)", "the Port Statistics page"],
   fdb: ["MAC table (what is on each port)", "the MAC Search page"]
 };
-const PROBES = { openwrt: OPENWRT_PROBES, snmp: SNMP_PROBES, proxmox: PROXMOX_PROBES, tplink: TPLINK_PROBES, dlink: DLINK_PROBES, realtek: REALTEK_PROBES };
+const UNIFI_PROBES = {
+  system: ["Device info (model, firmware, IP)", "a local controller login that can see this site (View Only is enough)"],
+  ports: ["Ports, link speeds, traffic and PoE", "the controller's device list"],
+  wifi: ["SSIDs (APs)", "the controller's device list"],
+  clients: ["Clients (Wi-Fi by SSID, wired by switch port)", "the controller's client list"],
+  uplinks: ["Cabling between UniFi devices", "the controller's uplink records and LLDP"]
+};
+const PROBES = { openwrt: OPENWRT_PROBES, snmp: SNMP_PROBES, proxmox: PROXMOX_PROBES, tplink: TPLINK_PROBES, dlink: DLINK_PROBES, realtek: REALTEK_PROBES, unifi: UNIFI_PROBES };
 
 // Collectors: extra data sources next to a device's driver (server/collectors). Their probes are "<kind>:<name>".
 const COLLECTORS = {
@@ -255,7 +262,7 @@ function UnmanagedForm({ devices, onDone, onCancel }) {
   );
 }
 
-// A Proxmox VE node: log in with a PVE-realm account, look up the cluster's nodes, pick the one this device is.
+// A Proxmox VE node: log in with a PVE- or PAM-realm account, look up the cluster's nodes, pick the one this device is.
 function ProxmoxForm({ onDone, onCancel }) {
   const [f, setF] = useState({ name: "", host: "", port: "", username: "", password: "", node: "" });
   const [nodes, setNodes] = useState(null);
@@ -286,7 +293,7 @@ function ProxmoxForm({ onDone, onCancel }) {
         <label style={{ flex: "0 0 90px" }}>Port<input value={f.port} onChange={set("port")} placeholder="8006" inputMode="numeric" /></label>
       </div>
       <div className="nm-grid2">
-        <label>User (PVE realm)<input value={f.username} onChange={set("username")} placeholder="monitor@pve" autoComplete="off" required /></label>
+        <label>User (user@pve or user@pam)<input value={f.username} onChange={set("username")} placeholder="monitor@pve" autoComplete="off" required /></label>
         <label>Password<input type="password" value={f.password} onChange={set("password")} autoComplete="off" required /></label>
       </div>
       <div className="row">
@@ -300,10 +307,71 @@ function ProxmoxForm({ onDone, onCancel }) {
       </div>
       {nodes && <p className="hint">Cluster {nodes.cluster || "(no name)"}: {nodes.nodes.length} node{nodes.nodes.length === 1 ? "" : "s"}. Add each node you want on the map as its own device; they share one login and one read of the cluster.</p>}
       <label>Name on the map<input value={f.name} onChange={set("name")} placeholder={f.node || "KVM1"} /></label>
-      <p className="hint">Use a PVE-realm account (<code>user@pve</code>), not PAM; the <b>PVEAuditor</b> role on <code>/</code> is enough, read-only. The password is stored so netmap can poll.</p>
+      <p className="hint">Use a PVE-realm (<code>user@pve</code>) or PAM (<code>user@pam</code>, a Linux user on the node) account; a bare name means <code>@pve</code>. The <b>PVEAuditor</b> role on <code>/</code> is enough, read-only. The password is stored so netmap can poll.</p>
       {err && <p className="nm-error">{err}</p>}
       <div className="row nm-modal-actions">
         <button className="btn" disabled={busy}>{busy && nodes ? "Adding…" : f.node ? "Add and probe" : "Look up nodes"}</button>
+        <button type="button" className="btn quiet" onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+// A UniFi device: log in to the controller, look up its devices, pick the one this is.
+function UnifiForm({ onDone, onCancel }) {
+  const [f, setF] = useState({ name: "", host: "", port: "", username: "", password: "", node: "" });
+  const [found, setFound] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const conn = () => ({ host: f.host, port: f.port ? Number(f.port) : 8443, username: f.username, password: f.password });
+  const nameOf = (node) => ((found && found.devices.find((d) => d.node === node)) || {}).name || "";
+  const lookup = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const r = await api.unifiDevices(conn());
+      setFound(r);
+      const first = r.devices.find((d) => d.online) || r.devices[0];
+      if (first && !f.node) setF((x) => ({ ...x, node: first.node, name: x.name || first.name }));
+    } catch (x) { setErr(x.message); setFound(null); } finally { setBusy(false); }
+  };
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!f.node) { lookup(); return; }
+    setBusy(true); setErr(null);
+    try { onDone(await api.addDevice({ driver: "unifi", ...conn(), https: 1, node: f.node, name: f.name || nameOf(f.node) })); }
+    catch (x) { setErr(x.message); } finally { setBusy(false); }
+  };
+  const sites = found ? [...new Set(found.devices.map((d) => d.siteName))] : [];
+  return (
+    <form className="nm-form" onSubmit={submit}>
+      <div className="row">
+        <label>Controller host / IP<input value={f.host} onChange={set("host")} placeholder="192.168.1.20" required /></label>
+        <label style={{ flex: "0 0 90px" }}>Port<input value={f.port} onChange={set("port")} placeholder="8443" inputMode="numeric" /></label>
+      </div>
+      <div className="nm-grid2">
+        <label>User<input value={f.username} onChange={set("username")} placeholder="readonly" autoComplete="off" required /></label>
+        <label>Password<input type="password" value={f.password} onChange={set("password")} autoComplete="off" required /></label>
+      </div>
+      <div className="row">
+        <label>Device
+          <select value={f.node} onChange={(e) => setF({ ...f, node: e.target.value, name: !f.name || nameOf(f.node) === f.name ? nameOf(e.target.value) : f.name })} disabled={!found}>
+            {!found && <option value="">Look up the devices first</option>}
+            {found && sites.map((s) => (
+              <optgroup key={s} label={sites.length > 1 ? `Site ${s}` : "Devices"}>
+                {found.devices.filter((d) => d.siteName === s).map((d) => <option key={d.node} value={d.node}>{d.name} · {d.model}{d.ip ? ` (${d.ip})` : ""}{d.online ? "" : " · offline"}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </label>
+        <button type="button" className="btn quiet" onClick={lookup} disabled={busy || !f.host || !f.username || !f.password}>{busy && !found ? "Logging in…" : "Look up devices"}</button>
+      </div>
+      {found && <p className="hint">UniFi Network {found.version || ""}: {found.devices.length} device{found.devices.length === 1 ? "" : "s"}. Add each one you want on the map as its own device; they share one login and one read of the controller.</p>}
+      <label>Name on the map<input value={f.name} onChange={set("name")} placeholder={nameOf(f.node) || "Office switch"} /></label>
+      <p className="hint">Use a <b>local</b> controller account (not a UI.com login, no two-factor); the <b>View Only</b> role is enough. A UniFi OS console (UDM, Cloud Key Gen2) answers on port 443. The password is stored so netmap can poll.</p>
+      {err && <p className="nm-error">{err}</p>}
+      <div className="row nm-modal-actions">
+        <button className="btn" disabled={busy}>{busy && found ? "Adding…" : f.node ? "Add and probe" : "Look up devices"}</button>
         <button type="button" className="btn quiet" onClick={onCancel}>Cancel</button>
       </div>
     </form>
@@ -318,7 +386,8 @@ const ADD_MODES = [
   { id: "tplink", group: "TP-Link", label: "TP-Link Easy Smart switch (TL-SG105E / 108E / 116E …)", hint: "Read from its web page with the admin login: ports, link speeds and packet counts. These switches have no MAC table, so clients behind one are placed by its port." },
   { id: "dlink", group: "D-Link", label: "D-Link Easy Smart switch (DGS-1100 series)", hint: "Read from its web page with the admin password: ports, link speeds, packet counts, the MAC table and, on PoE models, power per port. These have no SNMP." },
   { id: "realtek", group: "2.5G web-managed", label: "2.5G web-managed switch (SL-SWTGW218AS, Sodola, Keeplink, Horaco …)", hint: "Realtek-based 8 × 2.5G + SFP+ switches with a .cgi web page and no SNMP. Read with the admin login: ports, link speeds, packet counts and the MAC table." },
-  { id: "proxmox", group: "Proxmox VE", label: "Proxmox VE node", hint: "Log in with a PVE-realm account (user@pve) and pick which node of the cluster this is. Its VMs and containers hang off it." },
+  { id: "proxmox", group: "Proxmox VE", label: "Proxmox VE node", hint: "Log in with a PVE or PAM account (user@pve, user@pam) and pick which node of the cluster this is. Its VMs and containers hang off it." },
+  { id: "unifi", group: "UniFi", label: "UniFi AP or switch (through the controller)", hint: "Log in to the UniFi Network controller with a local View Only account and pick the device. Wi-Fi clients by SSID, wired clients by switch port, PoE and the cabling between UniFi devices." },
   { id: "unmanaged", group: "Not probed", label: "Unmanaged switch (just a box on the map)", hint: "A dumb switch or anything else netmap can't ask. You say what it's plugged into." }
 ];
 
@@ -345,6 +414,8 @@ function AddDeviceModal({ open, onClose, onAdded, onJobState, devices }) {
         ? <SetupForm onAdded={onAdded} onClose={onClose} onJobState={(st) => { setJobState(st); onJobState && onJobState(st); }} />
         : mode === "proxmox"
           ? <ProxmoxForm onDone={(r) => { if (r && r.device) onAdded(r.device.id); onClose(); }} onCancel={onClose} />
+        : mode === "unifi"
+          ? <UnifiForm onDone={(r) => { if (r && r.device) onAdded(r.device.id); onClose(); }} onCancel={onClose} />
         : mode === "unmanaged"
           ? <UnmanagedForm devices={devices} onDone={(r) => { if (r && r.device) onAdded(r.device.id); onClose(); }} onCancel={onClose} />
           : <DeviceForm key={mode} driver={mode === "snmp" ? "snmp" : mode === "tplink" ? "tplink" : mode === "dlink" ? "dlink" : mode === "realtek" ? "realtek" : "openwrt"} onDone={(r) => { if (r && r.device) onAdded(r.device.id); onClose(); }} onCancel={onClose} />}
@@ -408,9 +479,19 @@ function DeviceForm({ initial, driver: newDriver = "openwrt", onDone, onCancel, 
           <label>Host / IP<input value={f.host} onChange={set("host")} required /></label>
           <label style={{ flex: "0 0 90px" }}>Port<input value={f.port} onChange={set("port")} placeholder="8006" inputMode="numeric" /></label>
         </div>
-        <label>User (PVE realm)<input value={f.username} onChange={set("username")} placeholder="monitor@pve" autoComplete="off" /></label>
+        <label>User (user@pve or user@pam)<input value={f.username} onChange={set("username")} placeholder="monitor@pve" autoComplete="off" /></label>
         <label>Password<input type="password" value={f.password} onChange={set("password")} autoComplete="new-password" placeholder="unchanged" /></label>
         <label>Node<input value={f.node || ""} onChange={set("node")} required /></label>
+      </>) : driver === "unifi" ? (<>
+        <div className="row">
+          <label>Controller host / IP<input value={f.host} onChange={set("host")} required /></label>
+          <label style={{ flex: "0 0 90px" }}>Port<input value={f.port} onChange={set("port")} placeholder="8443" inputMode="numeric" /></label>
+        </div>
+        <div className="nm-grid2">
+          <label>User<input value={f.username} onChange={set("username")} autoComplete="off" /></label>
+          <label>Password<input type="password" value={f.password} onChange={set("password")} autoComplete="new-password" placeholder="unchanged" /></label>
+        </div>
+        <label>Device (site/MAC)<input value={f.node || ""} onChange={set("node")} className="mono" required /></label>
       </>) : driver === "none" ? (<>
         <label>MAC address (optional)<input value={f.mac || ""} onChange={set("mac")} placeholder="00:11:22:33:44:55" className="mono" /></label>
         <label>Notes<input value={f.notes || ""} onChange={set("notes")} /></label>
@@ -503,6 +584,8 @@ function webUrl(node, device) {
   // Proxmox: any node's web UI manages the whole cluster, so open the one netmap already reaches (a node's own
   // port can be firewalled), straight to this node's page
   if (node.driver === "proxmox") return `${withPort("https", dev.host || node.apiHost || node.host, dev.port || 8006, 0)}#v1:0:=node%2F${encodeURIComponent(dev.node || node.proxmoxNode || node.name)}`;
+  // UniFi: the controller's page for the device's site (the device itself has no web page)
+  if (node.driver === "unifi") return `${withPort("https", dev.host || node.apiHost, dev.port || 8443, 0)}manage/${encodeURIComponent(String(dev.node || "default/").split("/")[0] || "default")}/devices`;
   if (node.driver === "openwrt") return dev.https ? withPort("https", dev.host || node.host, dev.port, 443) : withPort("http", dev.host || node.host, dev.port, 80);
   if (node.driver === "tplink" || node.driver === "dlink" || node.driver === "realtek") return withPort("http", node.host, dev.port, 80);
   // SNMP's port is the SNMP port, not the web one; switches that want HTTPS redirect there themselves
@@ -698,7 +781,26 @@ function WanPortPick({ node, device, ports, onChanged }) {
   );
 }
 
-const DRIVER_NAME = { openwrt: "OpenWrt", snmp: "SNMP", tplink: "TP-Link web", dlink: "D-Link web", realtek: "Switch web page", proxmox: "Proxmox API" };
+// Ports that don't matter (e.g. itf0): left off the faceplate and port lists. Clients seen on them still show.
+function HiddenPortsPick({ node, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const hidden = node.hiddenPorts || [];
+  const names = [...new Set([...node.ports.map((p) => p.name), ...hidden])].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const toggle = async (name, hide) => {
+    setBusy(true);
+    try { await api.updateDevice(node.deviceId, { hidden_ports: hide ? [...hidden, name] : hidden.filter((n) => n !== name) }); } finally { setBusy(false); onChanged(); }
+  };
+  return (
+    <div className="nm-role-pick">Hidden ports
+      <div className="nm-hidden-ports">
+        {names.map((n) => <label key={n} className="chk"><input type="checkbox" checked={hidden.includes(n)} disabled={busy} onChange={(e) => toggle(n, e.target.checked)} /> {n}</label>)}
+      </div>
+      <span className="hint">Ticked ports are left off the faceplate and port lists. Anything plugged into them still shows on the map.</span>
+    </div>
+  );
+}
+
+const DRIVER_NAME = { openwrt: "OpenWrt", snmp: "SNMP", tplink: "TP-Link web", dlink: "D-Link web", realtek: "Switch web page", proxmox: "Proxmox API", unifi: "UniFi controller" };
 
 function NameForm({ name, onSave }) {
   const [v, setV] = useState(name);
@@ -860,6 +962,7 @@ function DeviceDetail({ node, device, onChanged, onSelect, nameOf, devices, clie
           <h3>On the map</h3>
           <Roles node={node} onChanged={onChanged} />
           {node.isRoot && ports.length > 0 && <WanPortPick node={node} device={device} ports={ports} onChanged={onChanged} />}
+          {!unmanaged && (node.ports.length > 0 || (node.hiddenPorts || []).length > 0) && <HiddenPortsPick node={node} onChanged={onChanged} />}
           {!node.isRoot && <PluggedIntoEditor devices={devices.filter((d) => d.id !== node.id)} device={drawn ? Number(node.parent.slice(1)) : null} port={drawn ? node.parentPort : ""}
             autoLabel={unmanaged ? "Nothing" : "Automatic (from the switches)"}
             onSave={async (dev, port) => { await api.setUplink(node.deviceId, dev, port); onChanged(); }} />}
@@ -898,6 +1001,7 @@ function ClientDetail({ node, nameOf, onChanged, ouiCount, devices, tab, onTab }
             <dt>MAC</dt><dd className="mono">{node.mac}</dd>
             <dt>Maker</dt><dd>{node.vendor || (node.randomized ? "Private (randomized) MAC: the device makes it up, so there's no maker to look up" : ouiCount ? "Not in the manufacturer list" : "Manufacturer list not downloaded yet")}</dd>
             <dt>IP</dt><dd className="mono">{node.ip || "—"}</dd>
+            <dt>VLAN</dt><dd>{node.vlan != null ? <><VlanTag id={node.vlan} hue={node.vlanHue} />{node.vlans && node.vlans.length > 1 ? <span className="hint"> also seen on {node.vlans.filter((v) => v !== node.vlan).join(", ")}</span> : null}</> : "—"}</dd>
             <dt>Hostname</dt><dd>{node.hostname || "—"}</dd>
             <dt>First seen</dt><dd>{ago(node.firstSeen)}</dd>
             <dt>Last seen</dt><dd>{ago(node.lastSeen)}</dd>
@@ -999,6 +1103,7 @@ export default function App() {
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
   };
+  const [highlightVlan, setHighlightVlan] = useState(null);
   const [showFlow, setShowFlow] = useState(() => { try { return localStorage.getItem("nm-flow") !== "0"; } catch (e) { return true; } });
   useEffect(() => { try { localStorage.setItem("nm-flow", showFlow ? "1" : "0"); } catch (e) {} }, [showFlow]);
 
@@ -1015,6 +1120,14 @@ export default function App() {
         <span className="sub">{devNodes.length} device{devNodes.length === 1 ? "" : "s"} · {clientCount} client{clientCount === 1 ? "" : "s"}{graph ? ` · updated ${ago(graph.generatedAt)}` : ""}</span>
         <label className="chk"><input type="checkbox" checked={showClients} onChange={(e) => setShowClients(e.target.checked)} /> Show clients</label>
         <label className="chk"><input type="checkbox" checked={showFlow} onChange={(e) => setShowFlow(e.target.checked)} /> Traffic animation</label>
+        {graph && graph.vlans && graph.vlans.list.length > 1 && (
+          <label className="nm-vlan-pick">Highlight
+            <select value={highlightVlan ?? ""} onChange={(e) => setHighlightVlan(e.target.value === "" ? null : Number(e.target.value))}>
+              <option value="">All VLANs</option>
+              {graph.vlans.list.map((v) => <option key={v.id} value={v.id}>VLAN {v.id}{v.id === graph.vlans.main ? " (main)" : ""}{v.subnet ? ` · ${v.subnet}` : ""} · {v.clients} client{v.clients === 1 ? "" : "s"}</option>)}
+            </select>
+          </label>
+        )}
         {error && <span className="pill error">API: {error}</span>}
       </header>
       {/* key: a fresh form each time the dialog opens */}
@@ -1052,14 +1165,17 @@ export default function App() {
         </div>
       )}
       <main className={"nm-canvas" + (showFlow ? "" : " no-flow")}>
-        {graph && <NetworkMap graph={graph} api={api} selectedId={selected} onSelect={setSelected} onChanged={refresh} showClients={showClients} />}
+        {graph && <NetworkMap graph={graph} api={api} selectedId={selected} onSelect={setSelected} onChanged={refresh} showClients={showClients} highlightVlan={highlightVlan} />}
         <div className="nm-legend">
           <span><i className="ln wan" />WAN (internet)</span>
-          <span><i className="ln infra" />cable between devices</span>
+          <span><i className="ln thick" />cable between devices</span>
           <span><i className="ln cross" />extra cable (outside the tree)</span>
           <span><i className="ln wifi" />Wi-Fi</span>
-          <span><i className="ln wired" />wired client</span>
+          <span><i className="ln thin" />wired client</span>
+          <span><i className="ln dashed" />plugged in where you set it</span>
+          <span className="spd-scale">link speed:{SPEEDS.slice().reverse().map((b) => <span key={b.cls}><i className={"ln spd spd-" + b.cls} />{b.label}</span>)}<span>grey: unknown</span></span>
           <span><i className="sw random" />randomized (private) MAC</span>
+          {graph && graph.vlans && graph.vlans.list.length > 1 && <span><span className="nm-vlan" style={{ "--vl": 200 }}>VLAN n</span>a client off the main VLAN{graph.vlans.main != null ? ` (${graph.vlans.main})` : ""}</span>}
           {showFlow && <span><span className="flow"><i /><i /><i className="u" /></span>traffic: blue dots flow down, orange up; faster and bigger = more</span>}
           <span>Set where something is plugged in from its panel; select a cable you set and press Delete to remove it.</span>
         </div>

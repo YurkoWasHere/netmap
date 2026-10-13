@@ -49,11 +49,15 @@ const DeviceNode = memo(function DeviceNode({ data, selected }) {
   );
 });
 
+// A VLAN tag; hue comes from the graph (each VLAN on the map gets its own colour).
+export const VlanTag = ({ id, hue = 200, title }) => <span className="nm-vlan" style={{ "--vl": hue }} title={title}>VLAN {id}</span>;
+
 const ClientNode = memo(function ClientNode({ data, selected }) {
   return (
-    <div className={"nm-node nm-client via-" + data.via + (data.randomized ? " is-random" : "") + (selected ? " is-selected" : "")}>
+    <div className={"nm-node nm-client via-" + data.via + (data.randomized ? " is-random" : "") + (selected ? " is-selected" : "") + (data.dim ? " is-dim" : "")}>
       <Handle type="target" position={Position.Top} />
-      <div className="nm-node-head"><Icon name={clientIcon(data)} size={15} className={"via-" + data.via} /><strong>{data.name}</strong></div>
+      <div className="nm-node-head"><Icon name={clientIcon(data)} size={15} className={"via-" + data.via} /><strong>{data.name}</strong>
+        {data.vlanTag != null && <VlanTag id={data.vlanTag} hue={data.vlanHue} title={data.vlans && data.vlans.length > 1 ? `Seen on VLANs ${data.vlans.join(", ")}` : undefined} />}</div>
       <div className="nm-node-meta mono"><span>{data.ip || data.mac}</span></div>
       <div className="nm-node-maker" title={data.vendor || undefined}>{data.vendor || (data.randomized ? "Private (randomized) MAC" : "Unknown maker")}</div>
     </div>
@@ -129,6 +133,9 @@ const ElbowEdge = memo(function ElbowEdge({ id, sourceX, sourceY, targetX, targe
   return (
     <>
       <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} interactionWidth={interactionWidth} />
+      {/* link speed: the whole line below a port; for a device's lines to its ports, only the stretch from the shared
+          rail into the port (ports with different speeds share the drop and rail) */}
+      {data && data.spd && <path d={data.spd === "full" ? path : flowPath} className="nm-spd-seg" />}
       {label && (
         <EdgeLabelRenderer>
           <div className="nm-edge-label" style={{ transform: `translate(-50%, -50%) translate(${lx}px, ${ly}px)` }}>{label}</div>
@@ -163,6 +170,7 @@ const PortNode = memo(function PortNode({ data }) {
       <Handle type="target" position={Position.Top} isConnectable={false} />
       {data.wifi && <Icon name="ap" size={12} className="wifi-ico" />}
       <span className="lbl">{data.label}</span>
+      {data.speed && <span className={"spd-txt spd-" + data.speed.cls} title="link speed">{data.speed.label}</span>}
       <span className="cnt">{data.collapsed ? `+${data.count}` : data.count}</span>
       {data.watts != null && <span className="watts" title="PoE power this port is delivering">⚡{data.watts.toFixed(1)} W</span>}
       {data.rate && (data.rate.down != null || data.rate.up != null) && (
@@ -192,9 +200,15 @@ const natural = (a, b) => String(a).localeCompare(String(b), undefined, { numeri
 const shortPort = (p) => String(p)
   .replace(/^TwentyFiveGig(abit)?E(thernet)?/i, "Twe").replace(/^TenGigabitEthernet/i, "Te").replace(/^GigabitEthernet/i, "Gi")
   .replace(/^FastEthernet/i, "Fa").replace(/^Ethernet(?=\d)/i, "Eth").replace(/^Port-?channel/i, "Po");
+// Link speed: "2.5G", "1G", "100M", OpenWrt's "2500F", a bare "1000" -> Mbit/s; then the colour band it's drawn in.
+const speedMbps = (s) => { const m = String(s || "").match(/^\s*(\d+(?:\.\d+)?)\s*([GgMm])?/); const v = m ? Number(m[1]) * (/g/i.test(m[2] || "") ? 1000 : 1) : 0; return v > 0 ? v : null; };
+export const SPEEDS = [{ min: 10000, cls: "10g", label: "10G+" }, { min: 5000, cls: "5g", label: "5G" }, { min: 2500, cls: "2g5", label: "2.5G" },
+  { min: 1000, cls: "1g", label: "1G" }, { min: 100, cls: "100m", label: "100M" }, { min: 0, cls: "10m", label: "10M" }];
+const speedBand = (mbps) => (mbps == null ? null : SPEEDS.find((b) => mbps >= b.min));
+const spdClass = (mbps) => { const b = speedBand(mbps); return b ? " spd spd-" + b.cls : ""; };
 const portLabel = (p) => (/^\d+$/.test(p) ? `port ${p}` : shortPort(p));
 
-function buildView(graph, showClients, flipped) {
+function buildView(graph, showClients, flipped, highlightVlan) {
   const devs = graph.nodes.filter((n) => n.kind === "device");
   const byId = Object.fromEntries(graph.nodes.map((n) => [n.id, n]));
   const edgeTo = {};
@@ -214,6 +228,11 @@ function buildView(graph, showClients, flipped) {
     const p = iface && byId[devId] && (byId[devId].ports || []).find((x) => x.name === iface);
     if (p && (p.txBps != null || p.rxBps != null)) return { down: p.txBps, up: p.rxBps };
     return p && (p.txPps != null || p.rxPps != null) ? { down: p.txPps, up: p.rxPps, pps: true } : null;
+  };
+  // the port's link speed in Mbit/s, if it has a link and the device says
+  const portSpeed = (devId, iface) => {
+    const p = iface && byId[devId] && (byId[devId].ports || []).find((x) => x.name === iface);
+    return p && p.carrier !== false ? speedMbps(p.speed) : null;
   };
   // PoE power the device is putting out on a port, in watts (switches that report it per port), else null
   const portWatts = (devId, iface) => {
@@ -259,37 +278,44 @@ function buildView(graph, showClients, flipped) {
       return { ...g, id: gid, collapsed, columns, children: g.children.slice().sort((a, b) => (b.isCore - a.isCore) || natural(a.name, b.name)) };
     }).filter((g) => g.children.length || showClients));
   };
-  const widthMemo = {};
+  const boxMemo = {};
   // A group is its client columns, then its devices side by side, each followed by a gap.
   const groupWidth = (g) => Math.max(CW, g.columns.length * CW + g.children.reduce((w, c) => w + width(c.id) + GAP, 0));
-  const width = (id) => (widthMemo[id] != null ? widthMemo[id] : (widthMemo[id] = Math.max(DEV_W, groupsOf(id).reduce((w, g) => w + groupWidth(g), 0))));
+  // A device's box: its groups side by side, shifted so the row of ports is centred under the device. When the
+  // ports are lopsided (a wide subtree on one side) the box grows on that side, so the shift never pushes the
+  // groups into a neighbour's space. mid: the device's centre from the box's left; off: where its groups start.
+  const box = (id) => {
+    if (boxMemo[id]) return boxMemo[id];
+    const gs = groupsOf(id);
+    const total = gs.reduce((w, g) => w + groupWidth(g), 0);
+    const pcs = [];
+    let g0 = 0;
+    for (const g of gs) { if (!g.hidden) pcs.push(portCenterOf(g, g0)); g0 += groupWidth(g); }
+    const ports = pcs.length ? (Math.min(...pcs) + Math.max(...pcs)) / 2 : total / 2;
+    const l = Math.max(DEV_W / 2, ports), r = Math.max(DEV_W / 2, total - ports);
+    return (boxMemo[id] = { w: l + r, mid: l, off: l - ports });
+  };
+  const width = (id) => box(id).w;
 
   // Middle of what hangs below a group's port, for a group laid out from x = gl: client columns, then devices.
   const portCenterOf = (g, gl) => {
     const centers = g.columns.map((_, ci) => gl + ci * CW + CLIENT_W / 2);
     let cx = gl + g.columns.length * CW;
-    for (const child of g.children) { centers.push(cx + width(child.id) / 2); cx += width(child.id) + GAP; }
+    for (const child of g.children) { centers.push(cx + box(child.id).mid); cx += width(child.id) + GAP; }
     return centers.length ? (Math.min(...centers) + Math.max(...centers)) / 2 : gl + CLIENT_W / 2;
   };
 
   const nodes = [], edges = [];
   const place = (d, left, top) => {
-    const w = width(d.id);
+    const { mid, off } = box(d.id);
     const clientCount = graph.edges.filter((e) => e.source === d.id && e.target.startsWith("c")).length;
-    nodes.push({ id: d.id, type: "device", deletable: false, position: { x: left + (w - DEV_W) / 2, y: top }, data: { ...d, clientCount }, style: { width: DEV_W } });
+    nodes.push({ id: d.id, type: "device", deletable: false, position: { x: left + mid - DEV_W / 2, y: top }, data: { ...d, clientCount }, style: { width: DEV_W } });
     const gs = groupsOf(d.id);
     // Under a gateway with core switches, everything that isn't a core switch drops below the core row.
     const coreRow = d.isRoot && gs.some((g) => g.children.some((c) => c.isCore));
     const drop = coreRow ? CORE_DROP : 0;
-    // Centre the row of ports under the device (not just the groups' boxes), so a device with one port gets a
-    // straight line down; then lay the groups out from there.
-    let gl = left + (w - gs.reduce((s, g) => s + groupWidth(g), 0)) / 2;
-    {
-      let g0 = gl;
-      const pcs = [];
-      for (const g of gs) { if (!g.hidden) pcs.push(portCenterOf(g, g0)); g0 += groupWidth(g); }
-      if (pcs.length) gl += left + w / 2 - (Math.min(...pcs) + Math.max(...pcs)) / 2;
-    }
+    // The row of ports is centred under the device (see box), so a device with one port gets a straight line down.
+    let gl = left + off;
     for (const g of gs) {
       const gw = groupWidth(g);
       const hasCore = g.children.some((c) => c.isCore);
@@ -299,26 +325,29 @@ function buildView(graph, showClients, flipped) {
       const grate = portRate(d.id, g.iface);
       // one thing on the port: the port's traffic is its traffic
       const single = g.clients.length + g.children.length === 1 ? grate : null;
+      // the cable's speed, from this end; else, for one device alone on the port, from its end (its uplink port)
+      const gspeed = g.wifi ? null : portSpeed(d.id, g.iface)
+        ?? (g.children.length === 1 && !g.clients.length ? portSpeed(g.children[0].id, g.children[0].localUplink || (treeEdge[g.children[0].id] || {}).targetPort) : null);
       if (!g.hidden) {
         nodes.push({ id: g.id, type: "port", deletable: false, position: { x: portCenter - PORT_W / 2, y: top + PORT_DY + (hasCore ? 0 : drop) },
-          data: { label: g.label, count: g.clients.length, collapsed: g.collapsed, wifi: g.wifi, devices: g.children.length, rate: grate, watts: portWatts(d.id, g.iface) }, style: { width: PORT_W } });
-        edges.push({ id: "dp" + g.id, source: d.id, target: g.id, className: "nm-edge port-link kind-" + g.kind + (g.children.length ? " trunk" : ""), deletable: false, data: { rate: grate } });
+          data: { label: g.label, count: g.clients.length, collapsed: g.collapsed, wifi: g.wifi, devices: g.children.length, rate: grate, watts: portWatts(d.id, g.iface), speed: speedBand(gspeed) }, style: { width: PORT_W } });
+        edges.push({ id: "dp" + g.id, source: d.id, target: g.id, className: "nm-edge port-link kind-" + g.kind + (g.children.length ? " trunk" : "") + spdClass(gspeed), deletable: false, data: { rate: grate } });
       }
       g.columns.forEach((col, ci) => col.forEach((c, ri) => {
-        nodes.push({ id: c.id, type: "client", deletable: false, position: { x: gl + ci * CW, y: top + KIDS_DY + drop + ri * CH }, data: c, style: { width: CLIENT_W } });
+        nodes.push({ id: c.id, type: "client", deletable: false, position: { x: gl + ci * CW, y: top + KIDS_DY + drop + ri * CH }, data: highlightVlan != null && c.vlan !== highlightVlan ? { ...c, dim: true } : c, style: { width: CLIENT_W } });
         const e = edgeTo[c.id];
         // a VM has its own counters; anything else alone on its port gets the port's
         const vm = (c.sightings || []).find((x) => x.via === "vm" && x.detail && (x.detail.inBps != null || x.detail.outBps != null));
         const crate = vm ? { down: vm.detail.inBps, up: vm.detail.outBps } : single;
         edges.push({ id: e ? e.id : "u" + c.id, source: g.id, target: c.id, label: e && e.kind === "wifi" && e.signal != null ? `${e.signal} dBm` : undefined,
-          className: "nm-edge kind-" + (e ? e.kind : ""), deletable: false, data: { ...(e || {}), rate: crate }, labelBgPadding: [3, 1], labelBgBorderRadius: 3 });
+          className: "nm-edge kind-" + (e ? e.kind : "") + (e && e.kind !== "wifi" ? spdClass(gspeed) : ""), deletable: false, data: { ...(e || {}), rate: crate }, labelBgPadding: [3, 1], labelBgBorderRadius: 3 });
       }));
       let cl = gl + g.columns.length * CW;
       for (const child of g.children) {
         const e = treeEdge[child.id];
         place(child, cl, top + KIDS_DY + (child.isCore ? 0 : drop));
         if (!e.layoutOnly) edges.push({ id: e.id, source: g.id, target: child.id, label: e.targetPort ? shortPort(e.targetPort) : undefined,
-          className: "nm-edge infra tree kind-" + e.kind, deletable: !!e.linkId, data: { ...e, rate: grate }, labelBgPadding: [4, 2], labelBgBorderRadius: 3 });
+          className: "nm-edge infra tree kind-" + e.kind + spdClass(gspeed ?? portSpeed(child.id, child.localUplink || e.targetPort)), deletable: !!e.linkId, data: { ...e, rate: grate }, labelBgPadding: [4, 2], labelBgBorderRadius: 3 });
         cl += width(child.id) + GAP;
       }
       gl += gw;
@@ -347,17 +376,20 @@ function buildView(graph, showClients, flipped) {
   // Clients nobody could place.
   if (showClients && groups.none) {
     for (const [i, c] of groups.none.unattached.clients.entries()) {
-      nodes.push({ id: c.id, type: "client", deletable: false, position: { x: left + (i % 3) * CW, y: Math.floor(i / 3) * CH }, data: c, style: { width: CLIENT_W } });
+      nodes.push({ id: c.id, type: "client", deletable: false, position: { x: left + (i % 3) * CW, y: Math.floor(i / 3) * CH }, data: highlightVlan != null && c.vlan !== highlightVlan ? { ...c, dim: true } : c, style: { width: CLIENT_W } });
     }
   }
   // Cables that don't fit the tree (drawn by hand or LLDP between devices that already have a parent).
   for (const e of graph.edges) {
     if (!e.cross) continue;
     edges.push({ id: e.id, source: e.source, target: e.target, label: [e.sourcePort, e.targetPort].filter(Boolean).map(shortPort).join(" ↔ "),
-      className: "nm-edge infra cross kind-" + e.kind + (e.core ? " core-link" : ""), deletable: !!e.linkId,
+      className: "nm-edge infra cross kind-" + e.kind + (e.core ? " core-link" : "") + spdClass(portSpeed(e.source, e.sourcePort) ?? portSpeed(e.target, e.targetPort)), deletable: !!e.linkId,
       // traffic from the source's port: what it sends flows along the cable to the target, what it receives comes back
       data: { ...e, rate: portRate(e.source, e.sourcePort) || flipRate(portRate(e.target, e.targetPort)) }, labelBgPadding: [4, 2], labelBgBorderRadius: 3 });
   }
+  // speed-coloured lines (see ElbowEdge): everything below a port pill is on that port's cable, so it's coloured all
+  // the way; a device's own lines to its ports only from the rail down (the rail is shared by ports of any speed)
+  for (const e of edges) if (/\bspd\b/.test(e.className || "")) e.data = { ...e.data, spd: e.source.startsWith("p|") ? "full" : "own" };
   railTraffic(nodes, edges);
   return { nodes, edges: edges.concat(dotLayer(edges)) };
 }
@@ -416,7 +448,7 @@ function withSides(edges, nodes) {
 
 // Nothing on the map can be dragged: the layout is always the automatic tree. Where something is plugged in is
 // set from its panel (Plugged into), not by dragging lines.
-export default function NetworkMap({ graph, api, selectedId, onSelect, onChanged, showClients = true }) {
+export default function NetworkMap({ graph, api, selectedId, onSelect, onChanged, showClients = true, highlightVlan = null }) {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const sig = useMemo(() => JSON.stringify(graph), [graph]);
@@ -425,10 +457,10 @@ export default function NetworkMap({ graph, api, selectedId, onSelect, onChanged
 
   useEffect(() => {
     if (!graph) return;
-    const view = buildView(graph, showClients, flipped);
+    const view = buildView(graph, showClients, flipped, highlightVlan);
     setEdges(view.edges);
     setNodes(view.nodes.map((n) => ({ ...n, selected: n.id === selectedId })));
-  }, [sig, showClients, flipped]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sig, showClients, flipped, highlightVlan]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { setNodes((cur) => cur.map((n) => (n.selected === (n.id === selectedId) ? n : { ...n, selected: n.id === selectedId }))); }, [selectedId, setNodes]);
 

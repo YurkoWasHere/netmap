@@ -40,8 +40,23 @@ function pickRoot(devices, results) {
   return devices.length ? devices[0].id : null;
 }
 
+// A sighting's VLAN. 4094/4095 are reserved (the ER-X switch chip files everything under 4094 internally).
+const vlanOf = (s) => { const v = s && s.detail ? Number(s.detail.vlan) : NaN; return v >= 1 && v < 4094 ? v : null; };
+// "switch0.600" -> 600
+const ifaceVlan = (iface) => { const m = String(iface || "").match(/\.(\d{1,4})$/); const v = m ? Number(m[1]) : null; return v >= 1 && v < 4094 ? v : null; };
+// "192.168.60.254/24" -> "192.168.60.0/24"
+const network = (cidr) => {
+  const [ip, bits] = String(cidr).split("/");
+  const n = Number(bits), o = ip.split(".").map(Number);
+  if (o.length !== 4 || !(n >= 0 && n <= 32)) return cidr;
+  const v = ((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]) & (n ? (~0 << (32 - n)) : 0);
+  return `${[v >>> 24, (v >>> 16) & 255, (v >>> 8) & 255, v & 255].join(".")}/${n}`;
+};
+
+const hiddenPorts = (d) => new Set(String(d.hidden_ports || "").split(",").filter(Boolean));
+
 function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} } = {}) {
-  const devices = all(db.prepare(`select d.id, d.name, d.driver, d.host, d.enabled, d.notes, d.x, d.y, d.is_root, d.is_core, d.mac, d.node, d.paused_until,
+  const devices = all(db.prepare(`select d.id, d.name, d.driver, d.host, d.enabled, d.notes, d.x, d.y, d.is_root, d.is_core, d.mac, d.node, d.wan_port, d.hidden_ports, d.paused_until,
       p.polled_at, p.ok, p.error, p.last_ok_at, p.result
     from devices d left join polls p on p.device_id = d.id order by d.id`));
   const results = {};
@@ -192,7 +207,7 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
     return {
       // a Proxmox device logs in through any node's API; show the node's own address
       id: "d" + d.id, kind: "device", deviceId: d.id, name: d.name, apiHost: d.host,
-      host: (d.driver === "proxmox" && r && r.ownIps && r.ownIps[0]) || (d.driver === "none" && d.mac && macInfo[d.mac] ? macInfo[d.mac].ip : "") || d.host,
+      host: ((d.driver === "proxmox" || d.driver === "unifi") && r && r.ownIps && r.ownIps[0]) || (d.driver === "none" && d.mac && macInfo[d.mac] ? macInfo[d.mac].ip : "") || d.host,
       // an unmanaged switch's IP and name, looked up from its MAC
       macIp: d.driver === "none" && d.mac && macInfo[d.mac] ? macInfo[d.mac] : null, mac: d.mac || "", driver: d.driver, enabled: !!d.enabled,
       status: d.driver === "none" ? "unmanaged" : !d.polled_at ? "pending" : d.ok ? "ok" : "error", error: d.error || null, polledAt: d.polled_at, lastOkAt: d.last_ok_at,
@@ -204,13 +219,15 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
       wan: d.id === root && r ? (r.interfaces || []).filter((i) => /^wan|pppoe|^lte|^wwan/i.test(i.name) && i.up)
         .map((i) => ({ name: i.name, device: i.device, ipv4: i.ipv4, proto: i.proto, port: d.wan_port || i.port || null })) : [],
       wanPort: d.wan_port || null,
+      // ports you hid in Settings (left out of ports above), so Settings can list them to unhide
+      hiddenPorts: [...hiddenPorts(d)],
       parent: p ? "d" + p.x : null, parentPort: p ? p.xPort : null, uplinkPort: p ? p.yPort : uplink[d.id] || null, parentVia: p ? p.via : null,
       parentSeenAt: p && p.seenAt ? p.seenAt : null, parentSeenVia: p && p.seenVia ? p.seenVia : null,
       // the device's own name for its uplink port (where it sees the gateway), for drawing it on its faceplate
       localUplink: uplink[d.id] || null,
       // where it's really plugged in, when the role places it somewhere else on the map
       realParent: p && p.real ? "d" + p.real.x : null, realPort: p && p.real ? p.real.xPort : null, realUplinkPort: p && p.real ? p.real.yPort : null, realVia: p && p.real ? p.real.via : null,
-      system: r && r.system, interfaces: (r && r.interfaces) || [], ports: (r && r.ports) || [], wifi: (r && r.wifi) || [],
+      system: r && r.system, interfaces: (r && r.interfaces) || [], ports: ((r && r.ports) || []).filter((x) => !hiddenPorts(d).has(x.name)), wifi: (r && r.wifi) || [],
       neighbors: (r && r.neighbors) || [], probes: (r && r.probes) || {},
       guests: (r && r.guests) || [], cluster: (r && r.cluster) || null, proxmoxNode: d.node || "",
       // PoE switches: power now and budget from the last poll, energy recorded so far
@@ -281,6 +298,12 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
     const vm = list.find((s) => s.via === "vm");
     let at = placed || vm || wifi || fdb || l3;
     if (at && at === fdb && behind[at.device_id + "|" + at.iface] != null) at = { ...at, device_id: behind[at.device_id + "|" + at.iface], via: "fdb", iface: "" };
+    // VLAN: the sighting that placed it, else what most switches say, else the router's VLAN interface in ARP
+    const votes = {};
+    for (const s of list) { const v = vlanOf(s); if (v != null) votes[v] = (votes[v] || 0) + 1; }
+    for (const s of list) if (s.via === "arp") { const v = ifaceVlan(s.iface); if (v != null) votes[v] = (votes[v] || 0) + 1; }
+    const byVotes = Object.keys(votes).map(Number).sort((a, b) => votes[b] - votes[a] || a - b);
+    const vlan = vlanOf(at) ?? byVotes[0] ?? null;
     const id = "c" + c.mac;
     const hostname = c.lease_name || c.hostname, ip = c.lease_ip || c.ip;
     const maker = { ...(lookup(c.mac) || {}) };
@@ -290,7 +313,7 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
       id, kind: "client", mac: c.mac, name: c.label || hostname || c.mac, label: c.label, hostname, ip,
       vendor: maker.vendor || null, randomized: !!maker.randomized,
       firstSeen: c.first_seen, lastSeen: c.last_seen, x: c.x, y: c.y,
-      via: at ? at.via : null, placedDevice: placed ? c.placed_device : null, placedPort: placed ? c.placed_port : "", sightings: list.map(({ device_id, via, iface, detail, seen_at }) => ({ deviceId: device_id, via, iface, detail, seenAt: seen_at }))
+      vlan, vlans: byVotes, via: at ? at.via : null, placedDevice: placed ? c.placed_device : null, placedPort: placed ? c.placed_port : "", sightings: list.map(({ device_id, via, iface, detail, seen_at }) => ({ deviceId: device_id, via, iface, detail, seenAt: seen_at }))
     });
     if (at) edges.push({
       id: "e" + c.mac, source: "d" + at.device_id, target: id, kind: at.via, sourcePort: at.iface,
@@ -298,7 +321,37 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
     });
   }
 
-  return { generatedAt: new Date().toISOString(), nodes, edges };
+  // VLANs on the map. The most common one is the main LAN: clients on it get no tag. Subnets come from the
+  // gateway's VLAN interfaces (switch0.600 -> 600); its untagged interface's subnet goes with the main VLAN.
+  const vlanCount = {};
+  for (const n of nodes) if (n.kind === "client" && n.vlan != null) vlanCount[n.vlan] = (vlanCount[n.vlan] || 0) + 1;
+  const ids = Object.keys(vlanCount).map(Number).sort((a, b) => a - b);
+  const main = ids.length ? ids.reduce((a, b) => (vlanCount[b] > vlanCount[a] ? b : a)) : null;
+  const subnets = {};
+  for (const i of (rootNode && rootNode.interfaces) || []) {
+    if (!i.ipv4 || !i.ipv4.length || (rootNode.wan || []).some((w) => w.name === i.name)) continue;
+    const v = ifaceVlan(i.name) ?? (/\./.test(i.name) ? null : main);
+    if (v != null && !subnets[v]) subnets[v] = network(i.ipv4[0]);
+  }
+  // no switch or ARP entry said: go by which VLAN's subnet its IP is in
+  const inNet = (ip, cidr) => { const [base, bits] = cidr.split("/"); return network(`${ip}/${bits}`) === `${base}/${bits}`; };
+  for (const n of nodes) {
+    if (n.kind !== "client") continue;
+    if (n.vlan == null && n.ip) {
+      const hit = Object.entries(subnets).find(([, net]) => inNet(n.ip, net));
+      if (hit) { n.vlan = Number(hit[0]); vlanCount[n.vlan] = (vlanCount[n.vlan] || 0) + 1; }
+    }
+    n.vlanTag = n.vlan != null && n.vlan !== main ? n.vlan : null;
+  }
+
+  // tag colours: distinct hues handed out in VLAN order (hashing the numbers put 100 and 600 on the same yellow)
+  const HUES = [210, 25, 145, 330, 265, 175, 50, 0, 95, 295];
+  const others = Object.keys(vlanCount).map(Number).filter((id) => id !== main).sort((a, b) => a - b);
+  const hue = Object.fromEntries(others.map((id, i) => [id, HUES[i % HUES.length]]));
+  for (const n of nodes) if (n.kind === "client" && n.vlan != null) n.vlanHue = hue[n.vlan] ?? 200;
+  const vlans = { main, list: Object.keys(vlanCount).map(Number).sort((a, b) => a - b).map((id) => ({ id, clients: vlanCount[id], subnet: subnets[id] || "", hue: hue[id] ?? 200 })) };
+
+  return { generatedAt: new Date().toISOString(), nodes, edges, vlans };
 }
 
 module.exports = { build, plain };
