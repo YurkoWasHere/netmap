@@ -307,6 +307,14 @@ code { font-family: var(--font-mono); font-size: .9em; }
 .nm-port .cnt { flex: none; }
 
 /* connection labels: in React Flow's label layer, above every line and traffic dot */
+.nm-cable-card { position: fixed; z-index: 20; pointer-events: none; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 8px; font: 11px/1.4 var(--font-sans); box-shadow: 0 4px 14px rgba(0, 0, 0, .25); }
+.nm-cable-card table { border-collapse: collapse; }
+.nm-cable-card th { font-weight: 500; color: var(--muted); text-align: left; padding: 0 8px 2px 0; }
+.nm-cable-card td { padding: 1px 8px 1px 0; white-space: nowrap; font-family: var(--font-mono); }
+.nm-cable-card td:first-child { font-family: var(--font-sans); font-weight: 600; }
+.nm-cable-card .warn { color: var(--warn); margin-top: 4px; }
+.nm-cable-card .hint { color: var(--muted); margin-top: 4px; font-size: 10px; }
 .nm-edge-label { position: absolute; pointer-events: none; font: 10px/1.2 var(--font-mono); color: var(--muted); background: var(--panel);
   padding: 1px 4px; border-radius: 3px; white-space: nowrap; box-shadow: 0 0 0 1px var(--panel); }
 .nm-port .wifi-ico { color: var(--wifi); flex: none; }

@@ -234,6 +234,12 @@ function buildView(graph, showClients, flipped, highlightVlan) {
     const p = iface && byId[devId] && (byId[devId].ports || []).find((x) => x.name === iface);
     return p && p.carrier !== false ? speedMbps(p.speed) : null;
   };
+  // Both ends of a cable between devices, for the card shown when hovering it: port, link speed, traffic.
+  const cableEnds = (...ends) => ends.map(([id, port]) => {
+    const n = byId[id];
+    const p = port && n && (n.ports || []).find((x) => x.name === port);
+    return { name: n ? n.name : id, port: port || "", speed: p ? (p.carrier === false ? "no link" : p.speed || "") : "", rate: portRate(id, port) };
+  });
   // PoE power the device is putting out on a port, in watts (switches that report it per port), else null
   const portWatts = (devId, iface) => {
     const p = iface && byId[devId] && (byId[devId].ports || []).find((x) => x.name === iface);
@@ -331,7 +337,10 @@ function buildView(graph, showClients, flipped, highlightVlan) {
       if (!g.hidden) {
         nodes.push({ id: g.id, type: "port", deletable: false, position: { x: portCenter - PORT_W / 2, y: top + PORT_DY + (hasCore ? 0 : drop) },
           data: { label: g.label, count: g.clients.length, collapsed: g.collapsed, wifi: g.wifi, devices: g.children.length, rate: grate, watts: portWatts(d.id, g.iface), speed: speedBand(gspeed) }, style: { width: PORT_W } });
-        edges.push({ id: "dp" + g.id, source: d.id, target: g.id, className: "nm-edge port-link kind-" + g.kind + (g.children.length ? " trunk" : "") + spdClass(gspeed), deletable: false, data: { rate: grate } });
+        const only = g.children.length === 1 && !g.clients.length ? g.children[0] : null;
+        const ends = g.wifi || !g.children.length ? null
+          : cableEnds([d.id, g.iface], ...(only ? [[only.id, only.localUplink || (treeEdge[only.id] || {}).targetPort]] : []));
+        edges.push({ id: "dp" + g.id, source: d.id, target: g.id, className: "nm-edge port-link kind-" + g.kind + (g.children.length ? " trunk" : "") + spdClass(gspeed), deletable: false, data: { rate: grate, ends } });
       }
       g.columns.forEach((col, ci) => col.forEach((c, ri) => {
         nodes.push({ id: c.id, type: "client", deletable: false, position: { x: gl + ci * CW, y: top + KIDS_DY + drop + ri * CH }, data: highlightVlan != null && c.vlan !== highlightVlan ? { ...c, dim: true } : c, style: { width: CLIENT_W } });
@@ -347,7 +356,8 @@ function buildView(graph, showClients, flipped, highlightVlan) {
         const e = treeEdge[child.id];
         place(child, cl, top + KIDS_DY + (child.isCore ? 0 : drop));
         if (!e.layoutOnly) edges.push({ id: e.id, source: g.id, target: child.id, label: e.targetPort ? shortPort(e.targetPort) : undefined,
-          className: "nm-edge infra tree kind-" + e.kind + spdClass(gspeed ?? portSpeed(child.id, child.localUplink || e.targetPort)), deletable: !!e.linkId, data: { ...e, rate: grate }, labelBgPadding: [4, 2], labelBgBorderRadius: 3 });
+          className: "nm-edge infra tree kind-" + e.kind + spdClass(gspeed ?? portSpeed(child.id, child.localUplink || e.targetPort)), deletable: !!e.linkId,
+          data: { ...e, rate: grate, ends: cableEnds([d.id, g.iface], [child.id, child.localUplink || e.targetPort]) }, labelBgPadding: [4, 2], labelBgBorderRadius: 3 });
         cl += width(child.id) + GAP;
       }
       gl += gw;
@@ -385,7 +395,8 @@ function buildView(graph, showClients, flipped, highlightVlan) {
     edges.push({ id: e.id, source: e.source, target: e.target, label: [e.sourcePort, e.targetPort].filter(Boolean).map(shortPort).join(" ↔ "),
       className: "nm-edge infra cross kind-" + e.kind + (e.core ? " core-link" : "") + spdClass(portSpeed(e.source, e.sourcePort) ?? portSpeed(e.target, e.targetPort)), deletable: !!e.linkId,
       // traffic from the source's port: what it sends flows along the cable to the target, what it receives comes back
-      data: { ...e, rate: portRate(e.source, e.sourcePort) || flipRate(portRate(e.target, e.targetPort)) }, labelBgPadding: [4, 2], labelBgBorderRadius: 3 });
+      data: { ...e, rate: portRate(e.source, e.sourcePort) || flipRate(portRate(e.target, e.targetPort)), ends: cableEnds([e.source, e.sourcePort], [e.target, e.targetPort]) },
+      labelBgPadding: [4, 2], labelBgBorderRadius: 3 });
   }
   // speed-coloured lines (see ElbowEdge): everything below a port pill is on that port's cable, so it's coloured all
   // the way; a device's own lines to its ports only from the rail down (the rail is shared by ports of any speed)
@@ -446,6 +457,30 @@ function withSides(edges, nodes) {
   });
 }
 
+// The card shown while hovering a cable between devices: for each end, its port, link speed and traffic.
+function CableCard({ ends, x, y }) {
+  const rate = (r, k) => (r && r[k] != null ? (r.pps ? `${fmtPkts(r[k])} pkt/s` : `${fmtRate(r[k])}bit/s`) : "–");
+  const speeds = ends.map((e) => speedMbps(e.speed)).filter((v) => v != null);
+  return (
+    <div className="nm-cable-card" style={{ left: x + 14, top: y + 14 }}>
+      <table>
+        <thead><tr><th></th><th>link</th><th>sends</th><th>receives</th></tr></thead>
+        <tbody>
+          {ends.map((e, i) => (
+            <tr key={i}>
+              <td>{e.name}{e.port ? ` · ${portLabel(e.port)}` : ""}</td>
+              <td className={"spd-txt" + spdClass(speedMbps(e.speed)).replace(" spd", "")}>{e.speed || "–"}</td>
+              <td>{rate(e.rate, "down")}</td><td>{rate(e.rate, "up")}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {speeds.length === 2 && speeds[0] !== speeds[1] && <div className="warn">The two ends report different speeds.</div>}
+      <div className="hint">traffic averaged over the last poll</div>
+    </div>
+  );
+}
+
 // Nothing on the map can be dragged: the layout is always the automatic tree. Where something is plugged in is
 // set from its panel (Plugged into), not by dragging lines.
 export default function NetworkMap({ graph, api, selectedId, onSelect, onChanged, showClients = true, highlightVlan = null }) {
@@ -473,6 +508,10 @@ export default function NetworkMap({ graph, api, selectedId, onSelect, onChanged
   }, [deviceCount, showClients]);
 
   const shown = useMemo(() => withSides(edges, nodes), [edges, nodes]);
+  const [hover, setHover] = useState(null); // { id, x, y } of the cable under the mouse
+  const hoverEdge = (ev, e) => setHover(e.data && e.data.ends ? { id: e.id.replace(/~dots$/, ""), x: ev.clientX, y: ev.clientY } : null);
+  // read the ends from the current edges, so the card follows each poll while it's open
+  const hovered = hover && edges.find((e) => e.id === hover.id);
 
   const onEdgesDelete = useCallback(async (deleted) => {
     for (const e of deleted) if (e.data && e.data.linkId) await api.deleteLink(e.data.linkId);
@@ -485,6 +524,7 @@ export default function NetworkMap({ graph, api, selectedId, onSelect, onChanged
       edgeTypes={edgeTypes} defaultEdgeOptions={{ type: "elbow" }}
       onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
       onEdgesDelete={onEdgesDelete} nodesDraggable={false} nodesConnectable={false}
+      onEdgeMouseEnter={hoverEdge} onEdgeMouseMove={hoverEdge} onEdgeMouseLeave={() => setHover(null)}
       onNodeClick={(_, n) => {
         if (n.type === "port") setFlipped((f) => { const next = new Set(f); next.has(n.id) ? next.delete(n.id) : next.add(n.id); return next; });
         else if (onSelect) onSelect(n.id);
@@ -496,6 +536,7 @@ export default function NetworkMap({ graph, api, selectedId, onSelect, onChanged
     >
       <Background gap={24} size={1} />
       <Controls showInteractive={false} />
+      {hovered && hovered.data.ends && <CableCard ends={hovered.data.ends} x={hover.x} y={hover.y} />}
       <MiniMap pannable zoomable nodeClassName={(n) => "mm-" + n.type + " mm-" + (n.data.status || n.data.via) + (n.data.randomized ? " mm-random" : "")} />
     </ReactFlow>
   );
