@@ -630,7 +630,8 @@ function PauseControl({ node, onChanged }) {
 }
 
 const VIA = { fdb: "from the MAC tables", lldp: "from LLDP", manual: "set by you", role: "core switch, placed under the gateway",
-  behind: "behind the unmanaged switch on that port", remembered: "remembered" };
+  behind: "behind the unmanaged switch on that port", remembered: "remembered",
+  vm: "runs as a VM there", uplink: "sees the gateway there; nothing closer seen" };
 
 // The device's role shapes the map's hierarchy; it saves as soon as it's picked.
 const ROLES = {

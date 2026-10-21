@@ -5,7 +5,8 @@
 //
 // Returns the normalised shape (see drivers/openwrt.js), plus:
 //   guests   this node's VMs and containers: vmid, name, type, status, cpu, mem, nics [{ mac, bridge, tag }]
-//   ownIps   the node's IP: Proxmox doesn't report the node's MAC, so the map finds it through ARP
+//   ownIps   the node's IPs (cluster link first, then every address on its interfaces): Proxmox doesn't report
+//            the node's MAC, so the map finds it through ARP, and the router may only know it on one subnet
 //   cluster  { name, quorate, nodes: [{ name, ip, online }] }
 // Running guests' NICs are clients `via: "vm"` on their bridge, which beats what the switches see.
 const https = require("https");
@@ -136,6 +137,10 @@ async function poll(dev) {
     out.interfaces = net.filter((n) => n.cidr || n.address).map((n) => ({
       name: n.iface, up: !!n.active, proto: n.method || "static", device: n.iface, ipv4: [n.cidr || `${n.address}/${n.netmask || 32}`], ipv6: n.cidr6 ? [n.cidr6] : [], uptime: 0
     }));
+    for (const n of net) {
+      const ip = String(n.cidr || n.address || "").split("/")[0];
+      if (ip && !out.ownIps.includes(ip)) out.ownIps.push(ip);
+    }
   });
 
   // This node's guests, with NICs from their configs (cached: MACs and bridges rarely change).

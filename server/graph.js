@@ -8,8 +8,12 @@
 //   core      devices marked "Core switch" always hang directly off the gateway (drawn on the row under it).
 //             If one is really cabled through another core switch, that cable is returned as a `cross` edge.
 //   uplink    on every other device, the port where it sees the root's MAC.
+//   vm        a device that is a VM (its MAC is a guest NIC on a Proxmox node) hangs off that node. A gateway
+//             that's a VM has its host in front of it: the host hangs off the gateway, and the switch that sees
+//             the gateway on its uplink with nothing better to go on hangs off the host (else off the gateway).
 //   memory    the last confirmed connection (uplinks table) stands in for up to 7 days when nothing is seen
-//             right now, so a quiet link whose MAC-table entry aged out doesn't drop off the map.
+//             right now, so a quiet link whose MAC-table entry aged out doesn't drop off the map. Not when the
+//             device now sees the root on another port: then the memory is from before things moved.
 //   parent    of device Y: among devices X that see Y on a port that isn't X's uplink, the closest one, i.e.
 //             the one whose port has the fewest MACs behind it. A hand-drawn cable beats LLDP, which beats
 //             the MAC tables. LLDP only counts on a physical port: OpenWrt's lldpd on br-lan hears every
@@ -130,6 +134,16 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
   }
   const manual = all(db.prepare("select * from links"));
 
+  // Devices that run as a VM: device id -> { x: Proxmox node, port: its bridge }.
+  const vmHost = {};
+  for (const [mac, list] of Object.entries(perMac)) {
+    const y = byMac[mac];
+    const s = y != null && !vmHost[y] && list.find((s) => s.via === "vm" && s.device_id !== y);
+    if (s) vmHost[y] = { x: s.device_id, port: s.iface };
+  }
+  // what stands in front of the root on the cables: its host if it's a VM
+  const front = root != null && vmHost[root] ? vmHost[root].x : root;
+
   // Candidates for each device's parent, best first: drawn cable, LLDP, then MAC table (fewest MACs wins).
   const parentOf = {};
   const devIds = new Set(devices.map((d) => d.id));
@@ -139,7 +153,9 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
   const coreLinks = []; // real cables between core switches, drawn beside the tree
   for (const y of devices.map((d) => d.id)) {
     if (y === root) continue;
+    if (y === front) { parentOf[y] = { x: root, xPort: "", yPort: "", via: "vm", rank: 1, macs: 0 }; continue; }
     const cands = [];
+    if (vmHost[y]) cands.push({ x: vmHost[y].x, xPort: vmHost[y].port, yPort: "", via: "vm", rank: 1, macs: 0 });
     // A drawn cable runs from the upstream device (a) down to b.
     for (const l of manual) {
       if (l.b_device === y) cands.push({ x: l.a_device, xPort: l.a_port, yPort: l.b_port, via: "manual", rank: 0, macs: 0, linkId: l.id });
@@ -152,15 +168,19 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
       if (x !== y && s && s.port !== uplink[x]) cands.push({ x, xPort: s.port, yPort: uplink[y] || "", via: "fdb", rank: 2, macs: s.macs });
     }
     // A drawn cable or LLDP link to a device that is itself below y would make a loop; prefer candidates
-    // that y does not see on a downlink.
+    // that y does not see on a downlink. (Without a known uplink on y, there's no telling a downlink apart.)
     // Nothing seen right now (an entry aged out of a MAC table: a quiet link can drop out for a few minutes):
     // fall back to the last confirmed connection, for up to REMEMBER_DAYS.
     const mem = remembered[y];
-    if (!cands.some((c) => c.via !== "role") && mem && mem.parent_id !== y && devIds.has(mem.parent_id)) {
+    const moved = mem && mem.own_port && uplink[y] != null && mem.own_port !== uplink[y];
+    if (!cands.some((c) => c.via !== "role") && mem && !moved && mem.parent_id !== y && devIds.has(mem.parent_id)) {
       cands.push({ x: mem.parent_id, xPort: mem.parent_port, yPort: mem.own_port, via: "remembered", rank: 3, macs: 0, seenVia: mem.via, seenAt: mem.seen_at });
     }
+    // Sees the root but nobody sees it on a downlink: it's next to the root (or its host), which keeps no MAC
+    // table of its own to say so (a pfSense, a Proxmox node).
+    if (!cands.length && uplink[y] != null && front != null) cands.push({ x: front, xPort: "", yPort: uplink[y], via: "uplink", rank: 4, macs: 0 });
     cands.sort((a, b) => a.rank - b.rank || a.macs - b.macs);
-    const best = cands.find((c) => !(seen[y] && seen[y][c.x] && seen[y][c.x].port !== uplink[y]) || c.via === "manual") || cands[0];
+    const best = cands.find((c) => !(uplink[y] != null && seen[y] && seen[y][c.x] && seen[y][c.x].port !== uplink[y]) || c.via === "manual" || c.via === "vm") || cands[0];
     if (isCore.has(y) && root != null) {
       if (best && best.x === root) parentOf[y] = best; // really cabled to the gateway
       else {
@@ -171,12 +191,14 @@ function build(db, { clientMaxAgeMinutes = 60, lookup = () => null, energy = {} 
       }
     } else if (best) parentOf[y] = best;
   }
-  // Break any loop left over (e.g. contradictory hand-drawn cables): walk up from each device.
+  // Break any loop left over (e.g. contradictory hand-drawn cables): walk up from each device, and cut it only
+  // where the walk comes back to it (a device merely hanging below a loop keeps its parent).
   for (const y of Object.keys(parentOf).map(Number)) {
     const path = new Set([y]);
     let cur = parentOf[y] && parentOf[y].x;
     while (cur != null && parentOf[cur]) {
-      if (path.has(cur)) { delete parentOf[y]; break; }
+      if (cur === y) { delete parentOf[y]; break; }
+      if (path.has(cur)) break;
       path.add(cur);
       cur = parentOf[cur].x;
     }

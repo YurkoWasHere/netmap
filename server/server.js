@@ -136,7 +136,7 @@ function rememberUplinks() {
       if (n.kind !== "device" || !n.parent) continue;
       // a core switch's real connection, else its own; never a role placement or an older memory
       const real = n.realParent ? { p: n.realParent, pp: n.realPort, op: n.realUplinkPort, via: n.realVia } : { p: n.parent, pp: n.parentPort, op: n.uplinkPort, via: n.parentVia };
-      if (!["fdb", "lldp", "manual"].includes(real.via)) continue;
+      if (!["fdb", "lldp", "manual", "vm"].includes(real.via)) continue;
       up.run(n.deviceId, Number(real.p.slice(1)), real.pp || "", real.op || "", real.via, now);
     }
   } catch (e) { console.error("remembering uplinks failed:", e.message); }
